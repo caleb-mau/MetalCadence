@@ -44,6 +44,7 @@ static NSError *MCError(NSString *message) {
         _presentation = MCVideoPresentationEnhanced;
         _preferFreshestFrame = NO;
         _dedicatedPresentationThread = NO;
+        _maximumDrawableCount = 3;
         _skipRedundantPresentations = NO;
         _heldRefreshDrawEvery = 1;
         _presentationLatenessRefreshes = 1.5;
@@ -74,6 +75,7 @@ static NSError *MCError(NSString *message) {
     c.presentation = _presentation;
     c.preferFreshestFrame = _preferFreshestFrame;
     c.dedicatedPresentationThread = _dedicatedPresentationThread;
+    c.maximumDrawableCount = _maximumDrawableCount;
     c.skipRedundantPresentations = _skipRedundantPresentations;
     c.heldRefreshDrawEvery = _heldRefreshDrawEvery;
     c.presentationLatenessRefreshes = _presentationLatenessRefreshes;
@@ -364,7 +366,8 @@ static MCPipelineBundle *MCProductionPipelines(id<MTLDevice> device,
         c.minimumDelay < 0 || c.maximumDelay < c.minimumDelay || c.gpuTextureBudgetMiB < 64 ||
         c.gpuTextureBudgetMiB > 16384 || c.maxCachedTexturesPerPool > 256 ||
         c.preallocatedTexturesPerPool > c.maxCachedTexturesPerPool ||
-        c.maxConcurrentGPUBatches < 1 || c.maxConcurrentGPUBatches > 4) {
+        c.maxConcurrentGPUBatches < 1 || c.maxConcurrentGPUBatches > 4 ||
+        !(c.maximumDrawableCount == 2 || c.maximumDrawableCount == 3)) {
         if (error)
             *error = MCError(@"Invalid configuration");
         return nil;
@@ -532,6 +535,7 @@ static MCPipelineBundle *MCProductionPipelines(id<MTLDevice> device,
                 callback(sourceTime, presentedTime, frameID);
         };
     _scheduler.useDedicatedRenderThread = c.dedicatedPresentationThread;
+    _scheduler.maximumDrawableCount = c.maximumDrawableCount;
     _scheduler.skipHeldDraws = c.skipRedundantPresentations;
     _scheduler.heldRefreshDrawEvery = c.heldRefreshDrawEvery;
     _scheduler.latenessRefreshAllowance = c.presentationLatenessRefreshes;

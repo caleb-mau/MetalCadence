@@ -95,6 +95,16 @@ int main() {
             assert(!engine.running);
             assert([engine startWithRefreshRate:60 error:&e]);
             [engine stop];
+            // Drawable depth is copied and accepts only the macOS valid 2/3 choices.
+            MCVideoConfiguration *depth = [MCVideoConfiguration new];
+            depth.maximumDrawableCount = 2;
+            assert([[depth copy] maximumDrawableCount] == 2);
+            depth.maximumDrawableCount = 3;
+            assert([[depth copy] maximumDrawableCount] == 3);
+            depth.maximumDrawableCount = 1;
+            assert([[MCVideoEngine alloc] initWithConfiguration:depth
+                                                          layer:[CAMetalLayer layer]
+                                                          error:nil] == nil);
             MCVideoConfiguration *raw = [MCVideoConfiguration new];
             raw.inputWidth = 1280;
             raw.inputHeight = 720;

@@ -46,6 +46,8 @@ API_AVAILABLE(macos(26.0))
 @property BOOL preferFreshestFrame;
 /// Opt-in high-priority display-link run loop, separate from AppKit main run loop.
 @property BOOL dedicatedPresentationThread;
+/// Drawable pipeline depth, 2 or 3. Default 3, experiment with 2 at 60 Hz.
+@property NSUInteger maximumDrawableCount;
 /// Opt-in: skip redundant GPU redraws when the displayed frame is unchanged.
 @property BOOL skipRedundantPresentations;
 /// Optional partial held-frame redraw interval. 1 retains existing behavior.

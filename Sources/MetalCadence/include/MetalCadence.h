@@ -69,6 +69,10 @@ typedef struct {
 /// When >1, redraw one of every N held refreshes rather than all of them.
 /// Zero or one means draw every held refresh. skipHeldDraws overrides this.
 @property (nonatomic) NSUInteger heldRefreshDrawEvery;
+/// Experimental layer drawable queue depth: 2 (latency) or 3 (default).
+/// Configure before starting the display link; retain 3 for production until
+/// measured to sustain FPS during multi-window and fullscreen transitions.
+@property (nonatomic) NSUInteger maximumDrawableCount;
 - (instancetype)initWithLayer:(CAMetalLayer *)layer
                        device:(id<MTLDevice>)device
                      capacity:(NSUInteger)capacity

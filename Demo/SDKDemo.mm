@@ -57,6 +57,9 @@
         c.multiplier = mult;
     c.presentation = (MCVideoPresentation)self.mode.indexOfSelectedItem;
     for (NSString *argument in NSProcessInfo.processInfo.arguments) {
+        if ([argument isEqualToString:@"--drawable-count=2"]) {
+            c.maximumDrawableCount = 2;
+        }
         if ([argument hasPrefix:@"--late-refreshes="]) {
             c.presentationLatenessRefreshes = [[argument substringFromIndex:17] doubleValue];
         }

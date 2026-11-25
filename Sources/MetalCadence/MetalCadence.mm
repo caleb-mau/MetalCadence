@@ -91,6 +91,7 @@ NSInteger MCSelectDueFrame(const double *pts, NSUInteger count, double target, d
         _maxFrameLateness = .025;
         _latenessRefreshAllowance = 1.5;
         _heldRefreshDrawEvery = 1;
+        _maximumDrawableCount = 3;
         _selectionMode = MCFrameSelectionSmooth;
         _maximumPendingFrames = _capacity;
         _queue = [NSMutableArray arrayWithCapacity:_capacity];
@@ -198,7 +199,7 @@ NSInteger MCSelectDueFrame(const double *pts, NSUInteger count, double target, d
     os_unfair_lock_unlock(&_lock);
 
     _layer.displaySyncEnabled = YES;
-    _layer.maximumDrawableCount = 3;
+    _layer.maximumDrawableCount = self.maximumDrawableCount == 2 ? 2 : 3;
 
     if (self.useDedicatedRenderThread) {
         _renderThreadReady = dispatch_semaphore_create(0);
@@ -489,6 +490,7 @@ NSInteger MCSelectDueFrame(const double *pts, NSUInteger count, double target, d
     auto callbackTotal = _callbackTotalWindow;
     const auto snapshot_callbackAgeMs =
         _lastCallback > 0 ? (CACurrentMediaTime() - _lastCallback) * 1000 : 0;
+    const auto snapshot_maximumDrawableCount = _layer.maximumDrawableCount;
     const auto snapshot_callbacks = _callbacks;
     const auto snapshot_submitted = _submitted;
     const auto snapshot_presented = _freshPresented;
@@ -517,6 +519,7 @@ NSInteger MCSelectDueFrame(const double *pts, NSUInteger count, double target, d
     os_unfair_lock_unlock(&_lock);
     NSDictionary *base = @{
         @"callbackAgeMs" : @(snapshot_callbackAgeMs),
+        @"maximumDrawableCount" : @(snapshot_maximumDrawableCount),
         @"callbacks" : @(snapshot_callbacks),
         @"submitted" : @(snapshot_submitted),
         @"presented" : @(snapshot_presented),
