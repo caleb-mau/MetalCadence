@@ -276,3 +276,21 @@ artifacts and timing differences are intentionally visible.
 Run \`open MetalCadenceLatencyLab.app --args --self-test\` for six automatically
 triggered actions. JSON event pairs are written to
 \`~/Library/Application Support/MetalCadence/latency-lab-*.jsonl\`.
+
+### Abrupt motion and optical-flow artifacts
+
+The VideoToolbox interpolation engine can synthesize colored ghosting when a
+source frame abruptly teleports an object, changes scenes, or reveals a large
+occluded region. Metal is the GPU execution API, not the cause of that effect.
+
+The opt-in setting \`MCVideoConfiguration.suppressAbruptInterpolation = YES\`
+samples luma differences between successive real frames. When the input
+changes sharply, intermediate phases hold the previous frame rather than
+invoking optical flow. Output presentation cadence is still maintained, but
+the transition itself has only the original source motion detail. The guard
+may classify fast camera motion as a cut; do not enable by default for gameplay
+until validated on real captured footage.
+
+In the latency lab, the “Protect abrupt jumps” toggle enables the guard.
+Automated paired comparison: add \`--no-scene-guard\` to disable it. Metrics
+include \`abruptHoldBatches\` and \`abruptGuardEnabled\`.

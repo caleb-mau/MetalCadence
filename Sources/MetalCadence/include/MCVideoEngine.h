@@ -35,6 +35,10 @@ API_AVAILABLE(macos(26.0))
 @property BOOL adaptiveMultiplier; // Optional 4x -> 2x fallback when a batch cannot meet deadline.
 @property MCDuplicateFingerprintMethod duplicateFingerprintMethod;
 @property BOOL adaptiveLatency, duplicateDetection, audioEnabled;
+/// Opt-in protection against large motion discontinuities and hard cuts.
+/// Intermediate output frames hold the preceding real frame instead of using
+/// optical flow. Preserves frame pacing but not new motion detail at the cut.
+@property BOOL suppressAbruptInterpolation;
 @property double playoutDelay, minimumDelay, maximumDelay;
 @property MCVideoPresentation presentation;
 /// Opt in to skipping older due frames when three or more are backlogged.

@@ -30,7 +30,7 @@ static const int LabHeight = 720;
 @property NSTextField *heading, *subtitle, *leftTitle, *rightTitle, *leftNumbers, *rightNumbers;
 @property NSTextField *status, *instructions, *footnote;
 @property NSPopUpButton *quality, *buffer;
-@property NSButton *triggerButton;
+@property NSButton *triggerButton, *guardSwitch;
 @property NSTimer *sourceTimer, *metricsTimer;
 @property CVPixelBufferPoolRef sourcePool;
 @property NSMutableArray<MCLabInputEvent *> *events;
@@ -173,6 +173,7 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
     c.outputHeight = LabHeight;
     c.audioEnabled = NO;
     c.duplicateDetection = NO;
+    c.suppressAbruptInterpolation = enhanced && self.guardSwitch.state == NSControlStateValueOn;
     c.presentation = MCVideoPresentationEnhanced;
     c.maxConcurrentGPUBatches = 2;
     c.gpuTextureBudgetMiB = 256;
@@ -363,6 +364,7 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
     self.quality.frame = NSMakeRect(24, 89, 190, 30);
     self.buffer.frame = NSMakeRect(227, 89, 205, 30);
     self.triggerButton.frame = NSMakeRect(447, 85, 180, 38);
+    self.guardSwitch.frame = NSMakeRect(640, 87, 240, 35);
     self.footnote.frame = NSMakeRect(24, 23, w - 48, 30);
 }
 - (void)windowDidResize:(NSNotification *)notification {
@@ -521,6 +523,15 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
                                             action:@selector(triggerButtonPressed:)];
     self.triggerButton.bezelStyle = NSBezelStyleRounded;
     self.triggerButton.keyEquivalent = @" ";
+    self.guardSwitch = [NSButton checkboxWithTitle:@"Protect abrupt jumps"
+                                            target:self
+                                            action:@selector(reconfigure:)];
+    self.guardSwitch.state =
+        [NSProcessInfo.processInfo.arguments containsObject:@"--no-scene-guard"]
+            ? NSControlStateValueOff
+            : NSControlStateValueOn;
+    self.guardSwitch.enabled = !self.selfTest;
+    [root addSubview:self.guardSwitch];
     self.triggerButton.enabled = !self.selfTest;
     self.buffer.enabled = !self.selfTest;
     self.quality.enabled = !self.selfTest;
@@ -604,6 +615,8 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
         @"rightOverflow" : right[@"overflow"] ?: @0,
         @"rightProcessingP95Ms" : right[@"processingP95Ms"] ?: @0,
         @"rightPlayoutDelayMs" : right[@"playoutDelayMs"] ?: @0,
+        @"guardEnabled" : @(self.guardSwitch.state == NSControlStateValueOn),
+        @"rightAbruptHolds" : right[@"abruptHoldBatches"] ?: @0,
         @"rightGPUErrorCount" : right[@"gpuErrors"] ?: @0,
         @"rightInterpolationErrors" : right[@"interpolationErrors"] ?: @0
     };
