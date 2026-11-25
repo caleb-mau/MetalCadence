@@ -1,0 +1,21 @@
+#import <Foundation/Foundation.h>
+#import "MetalCadence.h"
+#include <assert.h>
+int main(){@autoreleasepool{
+ MCWorkloadProfile *game=[MCWorkloadProfile interactiveGameWithSourceFPS:30 displayFPS:120];
+ MCWorkloadPlan *p=[[MCWorkloadPlan alloc]initWithProfile:game];
+ assert(p.multiplier==2&&p.targetFreshFPS==60&&p.minimumDelay<.045);
+ MCVideoConfiguration *c=[MCVideoConfiguration configurationWithProfile:game];
+ assert(c.multiplier==2&&c.profile.kind==MCWorkloadKindInteractiveGame);
+ game.policy=MCFramePolicyMaximumThroughput;
+ assert([[MCWorkloadPlan alloc]initWithProfile:game].multiplier==4);assert([MCVideoConfiguration configurationWithProfile:game].adaptiveMultiplier);assert(((MCVideoConfiguration*)[[MCVideoConfiguration configurationWithProfile:game] copy]).adaptiveMultiplier);
+ game.policy=MCFramePolicyEnergySaver;
+ assert([[MCWorkloadPlan alloc]initWithProfile:game].multiplier==1);
+ game.policy=MCFramePolicyMinimumBoost;game.sourceFPS=60;game.minimumFreshFPS=61;game.preferredFreshFPS=120;
+ assert([[MCWorkloadPlan alloc]initWithProfile:game].multiplier==2);
+ game.kind=MCWorkloadKindRemoteDesktop;game.policy=MCFramePolicyLowestLatency;
+ assert([[MCWorkloadPlan alloc]initWithProfile:game].minimumDelay==.006);
+ game.producer=MCProducerKindCPURenderer;
+ assert(((MCWorkloadProfile*)[game copy]).producer==MCProducerKindCPURenderer);
+ puts("Workload profiles: 7 assertions passed");
+}}

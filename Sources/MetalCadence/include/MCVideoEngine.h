@@ -3,14 +3,22 @@
 #import <CoreVideo/CoreVideo.h>
 #import <AVFoundation/AVFoundation.h>
 NS_ASSUME_NONNULL_BEGIN
+@class MCWorkloadProfile;
+typedef NS_ENUM(NSInteger, MCDuplicateFingerprintMethod) { MCDuplicateFingerprintFNV, MCDuplicateFingerprintNEON };
+typedef NS_ENUM(NSInteger, MCInterpolationBackend) { MCInterpolationBackendVideoToolbox, MCInterpolationBackendLinearBlend };
 typedef NS_ENUM(NSInteger, MCVideoPresentation) { MCVideoPresentationCompare, MCVideoPresentationEnhanced, MCVideoPresentationOriginal, MCVideoPresentationUpscalingOnly, MCVideoPresentationFrameGenerationOnly };
 API_AVAILABLE(macos(26.0))
 @interface MCVideoConfiguration : NSObject <NSCopying>
 @property NSInteger inputWidth,inputHeight,outputWidth,outputHeight;
 @property NSInteger multiplier; // 1, 2 or 4
+@property MCInterpolationBackend interpolationBackend;
+@property BOOL adaptiveMultiplier; // Optional 4x -> 2x fallback when a batch cannot meet deadline.
+@property MCDuplicateFingerprintMethod duplicateFingerprintMethod;
 @property BOOL adaptiveLatency, duplicateDetection, audioEnabled;
 @property double playoutDelay,minimumDelay,maximumDelay;
 @property MCVideoPresentation presentation;
+@property(nonatomic,copy,nullable) MCWorkloadProfile *profile;
++(instancetype)configurationWithProfile:(MCWorkloadProfile*)profile NS_SWIFT_NAME(make(profile:));
 @end
 /// All incoming timestamps are in host-clock seconds (CACurrentMediaTime).
 /// Start/stop and attach on main thread. Submission is thread safe, bounded and nonblocking except sampled deduplication.
@@ -26,7 +34,7 @@ API_AVAILABLE(macos(26.0))
 -(BOOL)startWithRefreshRate:(float)refreshRate error:(NSError**)error;
 -(void)stop;
 -(void)updateRefreshRate:(float)refreshRate;
--(BOOL)submitVideo:(CVPixelBufferRef)buffer hostTime:(double)hostTime;
+-(BOOL)submitVideo:(CVPixelBufferRef _Nullable)buffer hostTime:(double)hostTime;
 /// 48 kHz, interleaved stereo float PCM; copied before returning.
 -(BOOL)submitAudio:(const float*)samples frameCount:(NSUInteger)count hostTime:(double)hostTime;
 -(NSDictionary<NSString*,NSNumber*>*)metrics;

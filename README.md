@@ -96,4 +96,40 @@ swift build
 open FrameLabSDK.app
 ```
 
-FrameLabSDK is a reference client using the public SDK and an independent virtual capture replay process. It logs JSON lines to `~/Library/Application Support/MetalCadence/sdk-metrics.jsonl`. The reference app defaults to 2x, compare mode, and muted audio. The older FrameLab remains available separately. No media is shipped in the repository.
+FrameLabSDK is a reference client using the public SDK and an independent virtual capture replay process. It logs JSON lines to `~/Library/Application Support/MetalCadence/sdk-metrics-<run-id>.jsonl`. The reference app defaults to 2x, compare mode, and muted audio. The older FrameLab remains available separately. No media is shipped in the repository.
+
+## Workload-aware frame policy
+
+Applications can describe *what they are producing* independently of interpolation settings:
+
+```swift
+let profile = MCWorkloadProfile.interactiveGame(withSourceFPS: 30, displayFPS: 120)
+profile.kind = .interactiveGame
+profile.policy = .minimumBoost
+profile.producer = .externalCapture
+
+let settings = MCVideoConfiguration.make(profile: profile)
+settings.interpolationBackend = .videoToolbox
+// Or .linearBlend, which is faster in some cases but can cause double images.
+```
+
+Supported workload categories are interactive game, real-time 3D source, remote desktop, video playback, live production and offline render. Policies are minimum boost (prioritize getting above native FPS), lowest latency, smooth pacing, maximum throughput and power saver. Each profile creates a fixed 1×/2×/4× processing configuration, delay limits and adaptive latency policy. The reference app's **Auto FPS** option uses that planner; explicitly setting 1×/2×/4× overrides only the multiplier. The producer kind describes the upstream data source and does **not** claim the SDK can interpolate on the CPU or render 3D games. The current interpolation backend uses Apple media/Metal hardware. The linear-blend option is mathematically simple and can look ghosted during motion.
+
+The SDK uses a bounded four-unique-frame input queue so a capture burst does not silently overwrite the first frame of a pair. The processing pipeline has two independent MetalFX scratch/scaler slots and a separate GPU completion queue. When overloaded, it discards stale work rather than growing latency without bound. Display timing uses command-buffer-managed drawable presentation. The adaptive controller reserves margin based on the display refresh period and generated-frame spacing. Sampled CPU fingerprints are always verified with a full plane comparison, preventing hash collisions from causing incorrectly discarded frames. ARM64 uses optional NEON SIMD fingerprinting; the GPU hash experiment was slower due to readback synchronization.
+
+### Reproducible audit and validation
+
+```sh
+./test-sdk.sh
+./Audit/run-quality.sh 240
+./Audit/run-hashbench.sh
+./build-sdk-demo.sh
+./Audit/run-matrix.sh FrameLabSDK.app local 15 20261125
+python3 Audit/summarize.py local
+```
+
+Replay tests require `replay.mp4` and `replay.f32` in the user's Application Support directory. The report in `Audit/STATUS.md` distinguishes checked items from unverified physical device tests. Tests confirm source-to-present **software** timestamps, not controller-to-photon latency or acoustic synchronization.
+
+### Isolated capture sessions
+
+Every reference application launch generates a unique run ID (or accepts `--run-id=your-test-id`). Video packets travel through `capture-<run-id>.ring` and telemetry is written to `sdk-metrics-<run-id>.jsonl` in Application Support. Benchmark scripts assign an independent namespace to each run, stop and verify old capture processes before launching a new one, and reject mixed-mode time series. This prevents one leftover app from overwriting another capture ring or interleaving performance logs. Older un-namespaced files should not be used for new before/after claims.

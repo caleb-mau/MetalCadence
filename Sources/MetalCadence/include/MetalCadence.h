@@ -28,4 +28,6 @@ typedef void (^MCEncodeBlock)(id<MTLCommandBuffer> commandBuffer,id<CAMetalDrawa
 @end
 NS_ASSUME_NONNULL_END
 
+#import "MCWorkloadProfile.h"
+#import "MCFrameBudgetController.h"
 #import "MCVideoEngine.h"
