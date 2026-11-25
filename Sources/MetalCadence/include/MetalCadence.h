@@ -63,6 +63,10 @@ typedef struct {
 /// 0 retains callback-time selection. Deferred selection runs off the UI thread
 /// and never intentionally crosses the display link's submission deadline.
 @property (nonatomic) double lateLatchDelaySeconds;
+/// Gaming-first mode. Submit each new frame immediately, bypassing the
+/// CAMetalDisplayLink's ~50ms presentation target lead and discarding queued
+/// stale frames. Does not synthesize intermediate frames.
+@property (nonatomic) BOOL immediatePresentation;
 /// Optional high-QoS presentation run loop, independent of UI event handling.
 /// Set before start; the default remains the main thread until validated.
 @property (nonatomic) BOOL useDedicatedRenderThread;

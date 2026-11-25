@@ -31,7 +31,7 @@ static const int LabHeight = 720;
 @property NSTextField *heading, *subtitle, *leftTitle, *rightTitle, *leftNumbers, *rightNumbers;
 @property NSTextField *status, *instructions, *footnote;
 @property NSPopUpButton *quality, *buffer, *resolution;
-@property NSButton *triggerButton, *guardSwitch, *sourceButton, *lateLatchSwitch;
+@property NSButton *triggerButton, *guardSwitch, *sourceButton, *lateLatchSwitch, *gamingSwitch;
 @property NSTimer *sourceTimer, *metricsTimer;
 @property MCWindowCapture *windowCapture;
 @property (atomic) BOOL captureMode;
@@ -183,6 +183,7 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
     c.suppressAbruptInterpolation = enhanced && self.guardSwitch.state == NSControlStateValueOn;
     c.lateLatchDelaySeconds =
         enhanced && self.lateLatchSwitch.state == NSControlStateValueOn ? .008 : 0;
+    c.gameplayImmediate = enhanced && self.gamingSwitch.state == NSControlStateValueOn;
     c.presentation = MCVideoPresentationEnhanced;
     c.maxConcurrentGPUBatches = 2;
     c.gpuTextureBudgetMiB = enhanced && size == 2 ? 512 : 256;
@@ -413,12 +414,15 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
     self.leftTitle.stringValue =
         self.captureMode ? @"GREENLIGHT / ORIGINAL STREAM" : @"30 FPS  •  ORIGINAL / DIRECT";
     NSString *resolution = @[ @"720p", @"1080p", @"1440p" ][self.resolution.indexOfSelectedItem];
-    self.rightTitle.stringValue =
-        [NSString stringWithFormat:@"%@ · %@ FPS  •  %@ / VIDEO TOOLBOX",
-                                   resolution,
-                                   self.quality.indexOfSelectedItem == 1 ? @"120" : @"60",
-                                   self.resolution.indexOfSelectedItem > 0 ? @"MetalFX + framegen"
-                                                                           : @"framegen"];
+    if (self.gamingSwitch.state == NSControlStateValueOn)
+        self.rightTitle.stringValue = @"GAMING RESPONSE · REAL FRAMES / METALFX (NO FRAMEGEN)";
+    else
+        self.rightTitle.stringValue = [NSString
+            stringWithFormat:@"%@ · %@ FPS  •  %@ / VIDEO TOOLBOX",
+                             resolution,
+                             self.quality.indexOfSelectedItem == 1 ? @"120" : @"60",
+                             self.resolution.indexOfSelectedItem > 0 ? @"MetalFX + framegen"
+                                                                     : @"framegen"];
     self.footnote.stringValue = [NSString
         stringWithFormat:@"Software drawable-present only; excludes Xbox network/decode latency. "
                          @"Display %.0f Hz. "
@@ -454,9 +458,10 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
     self.triggerButton.frame = NSMakeRect(447, 85, 180, 38);
     self.guardSwitch.frame = NSMakeRect(635, 87, 222, 35);
     self.lateLatchSwitch.frame = NSMakeRect(635, 53, 250, 30);
+    self.gamingSwitch.frame = NSMakeRect(635, 22, 335, 30);
     self.resolution.frame = NSMakeRect(856, 87, 165, 35);
     self.sourceButton.frame = NSMakeRect(1025, 85, 180, 38);
-    self.footnote.frame = NSMakeRect(24, 23, w - 48, 30);
+    self.footnote.frame = NSMakeRect(24, 23, 590, 30);
 }
 - (void)windowDidResize:(NSNotification *)notification {
     (void)notification;
@@ -644,6 +649,16 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
             : NSControlStateValueOff;
     self.lateLatchSwitch.enabled = !self.selfTest;
     [root addSubview:self.lateLatchSwitch];
+    self.gamingSwitch =
+        [NSButton checkboxWithTitle:@"Game response first (real frames, no framegen)"
+                             target:self
+                             action:@selector(reconfigure:)];
+    self.gamingSwitch.state =
+        [NSProcessInfo.processInfo.arguments containsObject:@"--game-response"]
+            ? NSControlStateValueOn
+            : NSControlStateValueOff;
+    self.gamingSwitch.enabled = !self.selfTest;
+    [root addSubview:self.gamingSwitch];
     self.triggerButton.enabled = !self.selfTest;
     self.buffer.enabled = !self.selfTest;
     self.quality.enabled = !self.selfTest;
@@ -715,6 +730,7 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
         @"kind" : @"summary",
         @"launchArguments" : NSProcessInfo.processInfo.arguments,
         @"rightMultiplier" : @(self.quality.indexOfSelectedItem == 1 ? 4 : 2),
+        @"rightGameplayImmediate" : right[@"gameplayImmediate"] ?: @NO,
         @"rightLateLatchRequestedMs" : right[@"schedulerLateLatchRequestedMs"] ?: @0,
         @"rightLateLatchActualP50Ms" : right[@"schedulerLateLatchActualP50Ms"] ?: @0,
         @"rightSubmissionDeadlineSlackP05Ms" : right[@"schedulerSubmissionDeadlineSlackP05Ms"]

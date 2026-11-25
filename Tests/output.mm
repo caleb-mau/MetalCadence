@@ -42,7 +42,8 @@ static void
 TestOutputFrameCount(NSInteger multiplier,
                      NSUInteger slots,
                      bool nativeResolution = false,
-                     MCInterpolationBackend backend = MCInterpolationBackendVideoToolbox) {
+                     MCInterpolationBackend backend = MCInterpolationBackendVideoToolbox,
+                     bool gameplayImmediate = false) {
     MCVideoConfiguration *configuration = [MCVideoConfiguration new];
     configuration.inputWidth = 1280;
     configuration.inputHeight = 720;
@@ -50,6 +51,7 @@ TestOutputFrameCount(NSInteger multiplier,
     configuration.outputHeight = nativeResolution ? 720 : 1080;
     configuration.interpolationBackend = backend;
     configuration.multiplier = multiplier;
+    configuration.gameplayImmediate = gameplayImmediate;
     configuration.maxConcurrentGPUBatches = slots;
     configuration.audioEnabled = NO;
     configuration.presentation = MCVideoPresentationCompare;
@@ -87,7 +89,7 @@ TestOutputFrameCount(NSInteger multiplier,
     NSInteger scheduled = [metrics[@"scheduledFrames"] integerValue];
     NSInteger native = [metrics[@"nativeOutputBatches"] integerValue];
 
-    NSInteger expected = multiplier == 1 ? inputCount : inputCount - 1;
+    NSInteger expected = (multiplier == 1 || gameplayImmediate) ? inputCount : inputCount - 1;
 
     if (processed != expected) {
         NSLog(@"Output source=%ldx expected=%ld processed=%ld scheduled=%ld metrics=%@",
@@ -97,8 +99,9 @@ TestOutputFrameCount(NSInteger multiplier,
               (long)scheduled,
               metrics);
     }
+    assert([metrics[@"gameplayImmediate"] boolValue] == gameplayImmediate);
     assert(processed == expected);
-    if (scheduled != processed * multiplier) {
+    if (scheduled != processed * (gameplayImmediate ? 1 : multiplier)) {
         NSLog(@"Output count mismatch: multiplier=%ld processed=%ld scheduled=%ld "
                "incomplete=%@ rejected=%@ native=%@ pool=%@ scale=%@ vt=%@ gpu=%@",
               (long)multiplier,
@@ -112,7 +115,7 @@ TestOutputFrameCount(NSInteger multiplier,
               metrics[@"interpolationErrors"],
               metrics[@"gpuErrors"]);
     }
-    assert(scheduled == processed * multiplier);
+    assert(scheduled == processed * (gameplayImmediate ? 1 : multiplier));
     assert([metrics[@"outputFrameAttempts"] integerValue] == scheduled);
     assert([metrics[@"rejectedOutputFrames"] integerValue] == 0);
     assert([metrics[@"incompleteGeneratedBatches"] integerValue] == 0);
@@ -120,7 +123,7 @@ TestOutputFrameCount(NSInteger multiplier,
     assert([metrics[@"scaleFailures"] integerValue] == 0);
     assert([metrics[@"interpolationErrors"] integerValue] == 0);
     assert([metrics[@"gpuErrors"] integerValue] == 0);
-    assert(native == (multiplier == 1 ? processed : 0));
+    assert(native == (multiplier == 1 || gameplayImmediate ? processed : 0));
     assert([metrics[@"nativeResolutionBypass"] boolValue] == nativeResolution);
     if (nativeResolution)
         assert([metrics[@"nativeTextureAllocations"] integerValue] == 0);
@@ -204,6 +207,14 @@ int main(void) {
             TestOutputFrameCount(1, 1, true);
             TestOutputFrameCount(2, 2, true);
             TestOutputFrameCount(2, 2, true, MCInterpolationBackendLinearBlend);
+            TestOutputFrameCount(2, 2, true, MCInterpolationBackendVideoToolbox, true);
+            TestOutputFrameCount(2, 2, false, MCInterpolationBackendVideoToolbox, true);
+            MCVideoConfiguration *invalidGamingAudio = [MCVideoConfiguration new];
+            invalidGamingAudio.gameplayImmediate = YES;
+            invalidGamingAudio.audioEnabled = YES;
+            assert([[MCVideoEngine alloc] initWithConfiguration:invalidGamingAudio
+                                                          layer:[CAMetalLayer layer]
+                                                          error:nil] == nil);
             TestAbruptGuard(false);
             TestAbruptGuard(true);
             TestAbruptGuard(true, 4);

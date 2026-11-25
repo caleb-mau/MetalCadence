@@ -47,6 +47,9 @@ NSInteger MCSelectDueFrame(const double *pts, NSUInteger count, double target, d
     CFRunLoopRef _renderRunLoop;
     dispatch_semaphore_t _renderThreadReady, _renderThreadExited;
     dispatch_queue_t _lateLatchQueue;
+    dispatch_queue_t _immediateQueue;
+    MCFrame *_immediatePending;
+    BOOL _immediateDrawing;
     BOOL _renderThreadStarting;
     CAMetalLayer *_layer;
     id<MTLCommandQueue> _commandQueue;
@@ -99,6 +102,11 @@ NSInteger MCSelectDueFrame(const double *pts, NSUInteger count, double target, d
         _latenessRefreshAllowance = 1.5;
         _heldRefreshDrawEvery = 1;
         _lateLatchDelaySeconds = 0;
+        _immediatePresentation = NO;
+        _immediateQueue =
+            dispatch_queue_create("com.metalcadence.presentation.gaming",
+                                  dispatch_queue_attr_make_with_qos_class(
+                                      DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INTERACTIVE, 0));
         _lateLatchQueue =
             dispatch_queue_create("com.metalcadence.presentation.late-latch",
                                   dispatch_queue_attr_make_with_qos_class(
@@ -211,6 +219,11 @@ NSInteger MCSelectDueFrame(const double *pts, NSUInteger count, double target, d
 
     _layer.displaySyncEnabled = YES;
     _layer.maximumDrawableCount = 3;
+    if (self.immediatePresentation) {
+        // Use the next available drawable as soon as a newly upscaled real
+        // frame completes. No display-link presentation lookahead.
+        return;
+    }
 
     if (self.useDedicatedRenderThread) {
         _renderThreadReady = dispatch_semaphore_create(0);
@@ -242,8 +255,13 @@ NSInteger MCSelectDueFrame(const double *pts, NSUInteger count, double target, d
     NSAssert(NSThread.isMainThread, @"stop on main thread");
     os_unfair_lock_lock(&_lock);
     _running = NO;
+    _immediatePending = nil;
     os_unfair_lock_unlock(&_lock);
-
+    // Ensure no queued gaming renderer can start another drawable while
+    // teardown proceeds. GPU handlers retain the payload until completion.
+    dispatch_sync(_immediateQueue,
+                  ^{
+                  });
     [self teardownDisplayLink];
 
     os_unfair_lock_lock(&_lock);
@@ -252,9 +270,121 @@ NSInteger MCSelectDueFrame(const double *pts, NSUInteger count, double target, d
     os_unfair_lock_unlock(&_lock);
 }
 
+// The low-latency path is source-driven rather than display-link-driven.
+// Never queue old real frames behind a newer one. At most one submitted draw
+// and one replacement waiting; the GPU completion drives the next attempt.
+- (void)renderImmediateFrame {
+    @autoreleasepool {
+        os_unfair_lock_lock(&_lock);
+        MCFrame *f = _immediatePending;
+        _immediatePending = nil;
+        if (!_running || !f) {
+            _immediateDrawing = NO;
+            os_unfair_lock_unlock(&_lock);
+            return;
+        }
+        _lastID = f.identifier;
+        _callbacks++;
+        _inFlight++;
+        _submitted++;
+        os_unfair_lock_unlock(&_lock);
+
+        const double start = CACurrentMediaTime();
+        id<CAMetalDrawable> drawable = [_layer nextDrawable];
+        id<MTLCommandBuffer> command = drawable ? [_commandQueue commandBuffer] : nil;
+        if (!command) {
+            os_unfair_lock_lock(&_lock);
+            _inFlight--;
+            _noFrame++;
+            _errors++;
+            BOOL resume = _running && _immediatePending != nil;
+            if (!resume)
+                _immediateDrawing = NO;
+            os_unfair_lock_unlock(&_lock);
+            if (resume)
+                dispatch_async(_immediateQueue, ^{
+                    [self renderImmediateFrame];
+                });
+            return;
+        }
+        const double encodeStart = CACurrentMediaTime();
+        _encode(command, drawable, f);
+        const double encodeMs = (CACurrentMediaTime() - encodeStart) * 1000;
+        [drawable addPresentedHandler:^(id<MTLDrawable> presented) {
+            const double when = presented.presentedTime;
+            if (when <= 0)
+                return;
+            os_unfair_lock_lock(&self->_lock);
+            self->_presented++;
+            if (f.identifier > self->_lastDisplayedID) {
+                self->_lastDisplayedID = f.identifier;
+                self->_freshPresented++;
+                self->_sourceLatencyWindow.record(MAX(0, when - f.sourceTime) * 1000);
+                self->_sourceToReadyWindow.record(MAX(0, f.ready - f.sourceTime) * 1000);
+                self->_readyToPresentWindow.record(MAX(0, when - f.ready) * 1000);
+                self->_selectToPresentWindow.record(MAX(0, when - start) * 1000);
+                if (self->_lastPresented > 0) {
+                    double gap = (when - self->_lastPresented) * 1000;
+                    if (gap > 0) {
+                        self->_gapSum += gap;
+                        self->_gapWindow.record(gap);
+                    }
+                }
+                self->_lastPresented = when;
+            }
+            os_unfair_lock_unlock(&self->_lock);
+            MCFramePresentedBlock callback = self.onFreshFramePresented;
+            if (callback)
+                callback(f.sourceTime, when, f.identifier);
+        }];
+        [command addCompletedHandler:^(id<MTLCommandBuffer> completed) {
+            (void)f.payload;
+            os_unfair_lock_lock(&self->_lock);
+            self->_inFlight--;
+            if (completed.status == MTLCommandBufferStatusError)
+                self->_errors++;
+            self->_gpuSum += MAX(0, completed.GPUEndTime - completed.GPUStartTime);
+            BOOL resume = self->_running && self->_immediatePending != nil;
+            if (!resume)
+                self->_immediateDrawing = NO;
+            os_unfair_lock_unlock(&self->_lock);
+            if (resume)
+                dispatch_async(self->_immediateQueue, ^{
+                    [self renderImmediateFrame];
+                });
+        }];
+        [command presentDrawable:drawable];
+        [command commit];
+        const double done = CACurrentMediaTime();
+        os_unfair_lock_lock(&_lock);
+        _encodeCostWindow.record(encodeMs);
+        _callbackTotalWindow.record((done - start) * 1000);
+        _callbackLockWaitWindow.record(0);
+        os_unfair_lock_unlock(&_lock);
+    }
+}
 - (BOOL)submit:(MCFrame *)f {
     if (!isfinite(f.pts))
         return NO;
+    if (self.immediatePresentation) {
+        os_unfair_lock_lock(&_lock);
+        if (!_running || f.identifier <= _lastID ||
+            (_immediatePending && f.identifier <= _immediatePending.identifier)) {
+            os_unfair_lock_unlock(&_lock);
+            return NO;
+        }
+        if (_immediatePending)
+            _superseded++;
+        _immediatePending = f;
+        if (!_immediateDrawing) {
+            _immediateDrawing = YES;
+            dispatch_async(_immediateQueue, ^{
+                [self renderImmediateFrame];
+            });
+        }
+        os_unfair_lock_unlock(&_lock);
+        return YES;
+    }
     const double lockAttempt = CACurrentMediaTime();
     os_unfair_lock_lock(&_lock);
     const double lockAcquired = CACurrentMediaTime();
@@ -630,6 +760,7 @@ NSInteger MCSelectDueFrame(const double *pts, NSUInteger count, double target, d
     m[@"schedulerCallbackTotalP50Ms"] = @(callbackTotal.percentile(.50));
     m[@"schedulerCallbackTotalP95Ms"] = @(callbackTotal.percentile(.95));
     m[@"schedulerCallbackTotalP99Ms"] = @(callbackTotal.percentile(.99));
+    m[@"immediatePresentation"] = @(self.immediatePresentation);
     m[@"schedulerLateLatchRequestedMs"] = @(snapshot_lateLatchRequestMs);
     m[@"schedulerLateLatchActualP50Ms"] = @(actualLateLatch.percentile(.50));
     m[@"schedulerLateLatchActualP95Ms"] = @(actualLateLatch.percentile(.95));
