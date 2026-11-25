@@ -8,8 +8,10 @@ FOUNDATION_EXPORT NSInteger MCSelectDueFrame(const double *pts, NSUInteger count
 @property(nonatomic,readonly) int64_t identifier;
 @property(nonatomic,readonly) CFTimeInterval pts;
 @property(nonatomic,readonly) CFTimeInterval ready;
+@property(nonatomic,readonly) CFTimeInterval sourceTime;
 @property(nonatomic,readonly,strong) id payload;
 -(instancetype)initWithID:(int64_t)identifier pts:(CFTimeInterval)pts payload:(id)payload;
+-(instancetype)initWithID:(int64_t)identifier pts:(CFTimeInterval)pts sourceTime:(CFTimeInterval)sourceTime payload:(id)payload;
 @end
 typedef void (^MCEncodeBlock)(id<MTLCommandBuffer> commandBuffer,id<CAMetalDrawable> drawable,MCFrame *frame);
 /// A bounded, timestamp-based Metal presentation engine. All timestamps are host-clock seconds (CACurrentMediaTime).
@@ -25,3 +27,5 @@ typedef void (^MCEncodeBlock)(id<MTLCommandBuffer> commandBuffer,id<CAMetalDrawa
 -(NSDictionary<NSString*,NSNumber*>*)metrics;
 @end
 NS_ASSUME_NONNULL_END
+
+#import "MCVideoEngine.h"

@@ -49,3 +49,51 @@ To supply replay footage, put a 1080p60 MP4 at ~/Library/Application Support/Met
 Compare is the default visual mode. 2x interpolates 30 -> 60; 4x uses Apple's three quarter-phase outputs for 30 -> 120. Adaptive playout delay accounts for lookahead, transport timing, processing, and safety margin. Output textures are pooled. On empty display refreshes the scheduler retains and redraws the last image; the fresh-frame count excludes these repeats. Audio render callbacks indicate consumption, not measured acoustic/video synchronization. No physical USB bus, HDMI link, USB enumeration, real AVFoundation capture device or actual controller latency has been validated. The simulator is not an installed Core Media I/O extension.
 
 Metrics record fresh presentation counts, P95/P99 gaps, capture packets, duplicate hashes, dropped source slots, ring overruns, texture allocation/reuse, audio rendering callbacks, system-wide GPU utilization, per-process CPU and memory and OS thermal state. Display mode tool changes refresh only when explicitly invoked, for the current login session. 4x is experimental and 2x is the recommended mode.
+
+## Unified video SDK (macOS 26+)
+
+MetalCadence now ships the higher-level `MCVideoEngine`, independently of FrameLab. The existing scheduler remains available on macOS 14+. The unified engine requires macOS 26+, a compatible Metal device, MetalFX spatial scaling, and VideoToolbox interpolation support for the selected format.
+
+Add this repository as a Swift Package dependency and import `MetalCadence`. For example:
+
+```swift
+import MetalCadence
+import QuartzCore
+import Metal
+
+let config = MCVideoConfiguration()
+config.inputWidth = 1920
+config.inputHeight = 1080
+config.outputWidth = 2560
+config.outputHeight = 1440
+config.multiplier = 2
+config.adaptiveLatency = true
+config.audioEnabled = true
+config.presentation = .compare
+
+let layer = CAMetalLayer()
+layer.device = MTLCreateSystemDefaultDevice()
+let engine = try MCVideoEngine(configuration: config, layer: layer)
+try engine.start(withRefreshRate: 120)
+// Attach layer to your visible view. Submit timestamped NV12 video and PCM,
+// or use MCCaptureSource with an authorized AVFoundation capture device.
+// engine.metrics() returns a snapshot of the pipeline.
+```
+
+The public engine handles input validation, sampled duplicate detection, bounded latest-frame ingestion, VideoToolbox interpolation (1x bypass, 2x, 4x), MetalFX spatial upscaling, output texture pooling, display-linked scheduling, adaptive playout delay, audio scheduling and telemetry. The capture adapter discovers AVFoundation video devices and requests NV12 plus optional float stereo PCM. Physical capture device negotiation is not yet hardware-tested. The simulator is not a physical capture card.
+
+Start, stop and display refresh changes are main-thread operations. Feed immutable IOSurface-backed video-range NV12 buffers and interleaved 48 kHz stereo float PCM. All timestamps must use the host clock (CACurrentMediaTime); the capture adapter converts session timestamps to that clock. The configuration is copied at construction. Change presentation or mute while running; rebuild the engine for resolution or multiplier changes.
+
+Metrics distinguish fresh presentations from held refreshes. Source-to-present percentiles measure the input timestamp to the drawable presentation callback, not controller-to-photon latency. GPU utilization is system-wide and may be unavailable. Audio callbacks are not independent A/V synchronization measurements. The engine drops work when overloaded rather than allowing unlimited latency. Fourfold interpolation is experimental and not guaranteed to sustain 120 fresh FPS.
+
+### Build and run
+
+```sh
+swift build
+./test-sdk.sh
+(cd Examples/SwiftConsumer && swift run Smoke)
+./build-sdk-demo.sh
+open FrameLabSDK.app
+```
+
+FrameLabSDK is a reference client using the public SDK and an independent virtual capture replay process. It logs JSON lines to `~/Library/Application Support/MetalCadence/sdk-metrics.jsonl`. The reference app defaults to 2x, compare mode, and muted audio. The older FrameLab remains available separately. No media is shipped in the repository.
