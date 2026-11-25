@@ -11,8 +11,9 @@ stop_audit_apps() {
  pkill -x VirtualCapture 2>/dev/null || true
  sleep 1
  for proc in FrameLabSDK VirtualCapture; do
-  pgrep -x "$proc" 2>/dev/null | while read -r pid; do kill -KILL "$pid" 2>/dev/null || true; done
+  for pid in $(pgrep -x "$proc" 2>/dev/null || true); do kill -KILL "$pid" 2>/dev/null || true; done
  done
+ sleep 1
 }
 for spec in "30-2" "30-4" "60-2"; do
  source="${spec%-*}"; multiplier="${spec#*-}"

@@ -3,7 +3,7 @@
 Does not claim physical speaker/display synchronization."""
 from array import array
 from pathlib import Path
-import mmap, struct, time, math
+import mmap, struct, time, math, sys
 base=Path.home()/"Library/Application Support/MetalCadence"
 pcm=array('f')
 with (base/"replay.f32").open("rb") as f:pcm.frombytes(f.read())
@@ -14,7 +14,13 @@ start=min(5*48000,n//2);end=min(start+48000,n)
 rms=lambda xs:math.sqrt(sum(x*x for x in xs)/max(1,len(xs)))
 a=left[start:end];b=right[start:end]
 print(f"STEREO 48k samples={n}, midtrack left RMS={rms(a):.5f}, right RMS={rms(b):.5f}, channel_difference_RMS={rms([x-y for x,y in zip(a,b)]):.5f}")
-path=base/"capture.ring"
+runid=None
+for arg in sys.argv[1:]:
+ if arg.startswith("--run-id="):
+  runid=arg.split("=",1)[1]
+  if not runid or len(runid)>100 or any(ch not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-" for ch in runid):
+   raise SystemExit("Invalid --run-id value")
+path=base/(f"capture-{runid}.ring" if runid else "capture.ring")
 if not path.exists():raise SystemExit("No live capture ring; soundtrack verified from recording, live packet test skipped")
 VC_BYTES=1920*1080*3//2
 SLOT_BYTES=((36+800*2*4+VC_BYTES+7)//8)*8

@@ -22,7 +22,7 @@
 @property(atomic) long packets,transportDrops,ringOverruns,unstable,poolDrops;
 @property double lastElapsed,lastCPU;
 @property long lastPresented;
-@property NSString *base,*logPath,*runID;
+@property NSString *base,*logPath,*runID,*uiPhase;
 @property NSInteger refresh;
 @end
 @implementation SDKDemo
@@ -55,10 +55,22 @@
  NSInteger hz=self.window.screen.maximumFramesPerSecond?:60;if(hz!=self.refresh){self.refresh=hz;[self.engine updateRefreshRate:hz];}
  NSMutableDictionary *m=[[self.engine metrics] mutableCopy];if(!m)return;double elapsed=[m[@"elapsed"] doubleValue],cpu=[m[@"cpuSeconds"] doubleValue];long presented=[m[@"presented"] longValue];double delta=elapsed-self.lastElapsed;double fps=delta>0?(presented-self.lastPresented)/delta:0,cpuPct=self.lastElapsed&&delta>0?(cpu-self.lastCPU)/delta*100:0;self.lastElapsed=elapsed;self.lastCPU=cpu;self.lastPresented=presented;
  int gpu=-1;io_iterator_t it=0;if(IOServiceGetMatchingServices(kIOMainPortDefault,IOServiceMatching("IOAccelerator"),&it)==KERN_SUCCESS){io_service_t svc;while((svc=IOIteratorNext(it))){CFTypeRef v=IORegistryEntryCreateCFProperty(svc,CFSTR("PerformanceStatistics"),NULL,0);if(v){NSDictionary *d=CFBridgingRelease(v);NSNumber *n=d[@"Device Utilization %"];if(n)gpu=MAX(gpu,n.intValue);}IOObjectRelease(svc);}IOObjectRelease(it);}
- m[@"rollingFPS"]=@(fps);m[@"cpuPercentOneCore"]=@(cpuPct);m[@"systemGPUPercent"]=@(gpu);m[@"capturePackets"]=@(self.packets);m[@"transportDrops"]=@(self.transportDrops);m[@"ringOverruns"]=@(self.ringOverruns);m[@"unstable"]=@(self.unstable);m[@"capturePoolDrops"]=@(self.poolDrops);m[@"multiplier"]=@(self.engine.configuration.multiplier);
+ m[@"rollingFPS"]=@(fps);m[@"cpuPercentOneCore"]=@(cpuPct);m[@"systemGPUPercent"]=@(gpu);m[@"capturePackets"]=@(self.packets);m[@"transportDrops"]=@(self.transportDrops);m[@"ringOverruns"]=@(self.ringOverruns);m[@"unstable"]=@(self.unstable);m[@"capturePoolDrops"]=@(self.poolDrops);m[@"multiplier"]=@(self.engine.configuration.multiplier);m[@"windowRefreshHz"]=@(self.window.screen.maximumFramesPerSecond?:0);m[@"windowIsFullscreen"]=@((self.window.styleMask&NSWindowStyleMaskFullScreen)!=0);m[@"uiPhase"]=self.uiPhase?:@"normal";
  NSString *gpuText=gpu>0?[NSString stringWithFormat:@"system %d%%",gpu]:[NSString stringWithFormat:@"command %.0f%%", [m[@"gpuCommandWorkPercent"] doubleValue]];self.stats.stringValue=[NSString stringWithFormat:@"%.1f FPS   •   playout %.1f ms   •   P95 %.1f ms   •   P99 %.1f ms   •   GPU %@   •   CPU %.0f%%   •   RAM %.0f MiB",fps,[m[@"playoutDelayMs"] doubleValue],[m[@"gapP95Ms"] doubleValue],[m[@"gapP99Ms"] doubleValue],gpuText,cpuPct,[m[@"memoryMiB"] doubleValue]];
  self.details.stringValue=[NSString stringWithFormat:@"Profile %@  /  Capture %@  /  duplicate %@  /  processed %@  /  audio %@  /  GPU errors %@  /  reuse %@",m[@"profileKind"],m[@"received"],m[@"duplicates"],m[@"processed"],m[@"audioRendered"],m[@"gpuErrors"],m[@"textureReuses"]];
  NSData *line=[NSJSONSerialization dataWithJSONObject:m options:NSJSONWritingSortedKeys error:nil];NSFileHandle *f=[NSFileHandle fileHandleForWritingAtPath:self.logPath];[f seekToEndOfFile];[f writeData:line];[f writeData:[@"\n" dataUsingEncoding:NSUTF8StringEncoding]];[f closeFile];
+}
+-(void)runUIStress {
+ self.uiPhase=@"windowed-primary";
+ NSWindow *window=self.window;NSScreen *primary=window.screen;
+ NSArray<NSScreen*> *screens=NSScreen.screens;
+ NSScreen *secondary=nil;for(NSScreen *screen in screens)if(screen!=primary){secondary=screen;break;}
+ dispatch_after(dispatch_time(DISPATCH_TIME_NOW,2*NSEC_PER_SEC),dispatch_get_main_queue(),^{self.uiPhase=@"enter-fullscreen";[window toggleFullScreen:nil];});
+ dispatch_after(dispatch_time(DISPATCH_TIME_NOW,7*NSEC_PER_SEC),dispatch_get_main_queue(),^{self.uiPhase=@"exit-fullscreen";[window toggleFullScreen:nil];});
+ if(secondary){
+ dispatch_after(dispatch_time(DISPATCH_TIME_NOW,11*NSEC_PER_SEC),dispatch_get_main_queue(),^{self.uiPhase=@"secondary-monitor";NSRect f=secondary.visibleFrame;NSRect target=NSMakeRect(f.origin.x+15,f.origin.y+30,MIN(950,f.size.width-30),MIN(680,f.size.height-50));[window setFrame:target display:YES animate:NO];});
+ dispatch_after(dispatch_time(DISPATCH_TIME_NOW,16*NSEC_PER_SEC),dispatch_get_main_queue(),^{self.uiPhase=@"return-primary";NSRect f=primary.visibleFrame;NSRect target=NSMakeRect(f.origin.x+40,f.origin.y+40,MIN(1200,f.size.width-80),MIN(740,f.size.height-80));[window setFrame:target display:YES animate:NO];});
+ }
 }
 -(void)applicationDidFinishLaunching:(NSNotification*)n{
  self.base=[NSHomeDirectory() stringByAppendingPathComponent:@"Library/Application Support/MetalCadence"];[[NSFileManager defaultManager]createDirectoryAtPath:self.base withIntermediateDirectories:YES attributes:nil error:nil];self.runID=NSUUID.UUID.UUIDString;for(NSString *arg in NSProcessInfo.processInfo.arguments){if([arg hasPrefix:@"--run-id="]){NSString *candidate=[arg substringFromIndex:9];NSCharacterSet *safe=[NSCharacterSet characterSetWithCharactersInString:@"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"];if(candidate.length>0&&candidate.length<=100&&[candidate rangeOfCharacterFromSet:safe.invertedSet].location==NSNotFound)self.runID=candidate;}}self.logPath=[self.base stringByAppendingPathComponent:[NSString stringWithFormat:@"sdk-metrics-%@.jsonl",self.runID]];[@"" writeToFile:self.logPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
@@ -75,7 +87,7 @@
  self.stats=[NSTextField labelWithString:@"Starting SDK..."];self.stats.frame=NSMakeRect(12,30,1276,22);self.stats.font=[NSFont monospacedSystemFontOfSize:12 weight:NSFontWeightMedium];self.stats.autoresizingMask=NSViewWidthSizable;[root addSubview:self.stats];
  self.details=[NSTextField labelWithString:@"Waiting for independent capture source"];self.details.frame=NSMakeRect(12,6,1276,20);self.details.font=[NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightRegular];self.details.autoresizingMask=NSViewWidthSizable;[root addSubview:self.details];
  NSDictionary *attrs=@{(id)kCVPixelBufferWidthKey:@VC_W,(id)kCVPixelBufferHeightKey:@VC_H,(id)kCVPixelBufferPixelFormatTypeKey:@(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange),(id)kCVPixelBufferMetalCompatibilityKey:@YES,(id)kCVPixelBufferIOSurfacePropertiesKey:@{}};CVPixelBufferPoolCreate(NULL,NULL,(__bridge CFDictionaryRef)attrs,&_inputPool);
- [self.window makeKeyAndOrderFront:nil];[NSApp activateIgnoringOtherApps:YES];BOOL four=[NSProcessInfo.processInfo.arguments containsObject:@"--4x"],one=[NSProcessInfo.processInfo.arguments containsObject:@"--1x"],benchmark=[NSProcessInfo.processInfo.arguments containsObject:@"--benchmark"];[self.rate selectItemAtIndex:benchmark?(one?1:four?3:2):0];[self launchEngine:benchmark?(one?1:four?4:2):0];if(self.engine.running)[self startSimulator];self.reportTimer=[NSTimer scheduledTimerWithTimeInterval:1 target:self selector:@selector(report) userInfo:nil repeats:YES];
+ [self.window makeKeyAndOrderFront:nil];[NSApp activateIgnoringOtherApps:YES];BOOL four=[NSProcessInfo.processInfo.arguments containsObject:@"--4x"],one=[NSProcessInfo.processInfo.arguments containsObject:@"--1x"],benchmark=[NSProcessInfo.processInfo.arguments containsObject:@"--benchmark"];[self.rate selectItemAtIndex:benchmark?(one?1:four?3:2):0];[self launchEngine:benchmark?(one?1:four?4:2):0];if(self.engine.running)[self startSimulator];if([NSProcessInfo.processInfo.arguments containsObject:@"--ui-stress"])[self runUIStress];self.reportTimer=[NSTimer scheduledTimerWithTimeInterval:1 target:self selector:@selector(report) userInfo:nil repeats:YES];
 }
 -(void)applicationWillTerminate:(NSNotification*)n{self.stopping=YES;[self.reportTimer invalidate];if(self.simulator.running)[self.simulator terminate];[self.engine stop];}
 -(BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication*)a{return YES;}

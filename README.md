@@ -96,7 +96,7 @@ swift build
 open FrameLabSDK.app
 ```
 
-FrameLabSDK is a reference client using the public SDK and an independent virtual capture replay process. It logs JSON lines to `~/Library/Application Support/MetalCadence/sdk-metrics-<run-id>.jsonl`. The reference app defaults to 2x, compare mode, and muted audio. The older FrameLab remains available separately. No media is shipped in the repository.
+FrameLabSDK is a reference client using the public SDK and an independent virtual capture replay process. It logs JSON lines to `~/Library/Application Support/MetalCadence/sdk-metrics-<run-id>.jsonl`. The reference app defaults to auto-selected 2x for a 30 FPS gaming source, compare mode, and audible recorded stereo audio. Automated benchmark runs start muted. The older FrameLab remains available separately. No media is shipped in the repository.
 
 ## Workload-aware frame policy
 
@@ -133,3 +133,21 @@ Replay tests require `replay.mp4` and `replay.f32` in the user's Application Sup
 ### Isolated capture sessions
 
 Every reference application launch generates a unique run ID (or accepts `--run-id=your-test-id`). Video packets travel through `capture-<run-id>.ring` and telemetry is written to `sdk-metrics-<run-id>.jsonl` in Application Support. Benchmark scripts assign an independent namespace to each run, stop and verify old capture processes before launching a new one, and reject mixed-mode time series. This prevents one leftover app from overwriting another capture ring or interleaving performance logs. Older un-namespaced files should not be used for new before/after claims.
+
+### Display-transition and 4× quality diagnostics
+
+```bash
+./Audit/run-quality4.sh 120
+open -n FrameLabSDK.app --args --2x --benchmark --ui-stress --run-id=display-test
+python3 Audit/audio-verify.py --run-id=display-test
+```
+
+The display diagnostic automatically enters/exits fullscreen, transfers the window to another detected screen and restores it. It requires an interactive desktop with a second display. These tests observe API presentation callbacks and command status only; they cannot prove zero optical tearing or black flashing. The quality4 probe checks phase 0.5 against a real 60fps reference frame; phases 0.25/0.75 lack 120fps ground truth.
+
+### NV12 ranges and color processing
+
+The engine accepts either video-range 8-bit NV12 (`420v`) or full-range 8-bit NV12 (`420f`). Full-range buffers are normalized using a bounded CoreVideo pixel-buffer pool before Apple's VideoToolbox interpolation, because this macOS VTFrameProcessor configuration rejects native 420f. The source buffer is retained separately for correct duplicate detection, including the exact-verification path. BT.601, BT.709 and BT.2020 YCbCr matrix attachments are preserved and used for the RGB conversion shader; inputs with no metadata default to BT.709. 10-bit P010 sources, HDR10/PQ/HLG transfer conversion, HDMI audio-clock recovery and physical UVC captures remain unimplemented/unverified.
+
+Conversion-only benchmark at 1080p (M5): `./Audit/run-rangebench.sh` P50 0.615 ms, P95 0.640 ms over 150 samples. This is not an end-to-end latency measure.
+
+The repository ships reproducible experiment summaries in `Audit/verified-results.json`; the companion `Audit/export-results.py` builds the file from isolated local JSONL runs. The source replay media is CC BY 3.0 and is not redistributed in this repository. This is an **experimental** SDK, not yet a production gaming client.

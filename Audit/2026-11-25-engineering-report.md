@@ -88,3 +88,60 @@ Found actual first-pair loss from the original one-slot intake mailbox, and fixe
 The SDK engine copies all configuration fields including interpolationBackend, duplicateFingerprintMethod and adaptiveMultiplier. Test that properties survive both the config factory and engine initialization before trusting any backend-specific benchmark. Session-level results are stored in sdk-metrics-<run-id>.jsonl and each virtual device stream uses capture-<run-id>.ring; overlapping processes cannot cross-contaminate metrics. The benchmarking scripts terminate all old test apps and use unique IDs. Legacy sdk-metrics.jsonl is not safe to compare against isolated results.
 
 A later isolated 30→60 run using the corrected configuration copier and SIMD hashing measured 59 FPS in its latest one-second interval after 14s (0 GPU/VT processing errors). This is a screening result, not a long gaming stress result.
+
+## Long-duration fallback validation, corrected configuration
+
+An isolated 200-second 30 FPS replay run with `--adaptive4` and seed 90210 verified `adaptiveMultiplierEnabled=true`, `activeMultiplier` changed from 4 to 2 at approximately t=110 s, and `fallbackTransitions=1`. The system thermal state remained fair (1), so the controller did not attempt recovery, avoiding oscillation.
+
+Comparison over the **last 20 seconds (180–200 s)** against a 201-second fixed-4x recording with the same nominal seed and replay source:
+
+| Measure | Fixed 4x | Adaptive 4x→2x |
+|---|---:|---:|
+| Mean actual fresh FPS | 27.0 | 59.5 |
+| Minimum per-second fresh FPS | 20.0 | 55.9 |
+| Source to drawable P99, ms | 228.5 | 94.7 |
+| GPU/VT errors | 0/0 | 0/0 |
+
+The adaptive policy sacrifices 4x peak throughput after sustained overload in exchange for consistent frame cadence and lower latency. This is not optical controller-to-photon measurement. The originally reported purported adaptive results that never left 4x were invalidated by the missing `copyWithZone` property and shared log contamination. The new sessions use independent capture rings and metrics log files.
+
+## Corrected backend-specific verification
+
+A later five-mode benchmark was rerun using the corrected configuration copier and uniquely named capture rings, so `MCVideoConfiguration.interpolationBackend` actually selects the intended algorithm.
+
+| Input → output goal | VideoToolbox fresh FPS | Metal blend fresh FPS | VT processing P95 | Blend processing P95 |
+| --- | ---: | ---: | ---: | ---: |
+| 30 → 30 | 29.99 | 29.88 | 4.54 ms | 4.77 ms |
+| 30 → 60 | 59.76 | 59.66 | 22.06 ms | 7.71 ms |
+| 30 → 120 | 110.42 | 112.87 | 37.27 ms | 8.16 ms |
+| 60 → 60 | 58.88 | 58.32 | 4.61 ms | 5.27 ms |
+| 60 → 120 | 104.55 | 100.51 | 14.53 ms | 6.57 ms |
+
+Linear blend is substantially cheaper but does not guarantee a higher presented FPS and can create ghosting around moving objects. The SDK defaults to motion-compensated VideoToolbox for interactive games and requires opt-in for blend.
+
+The independent 4× VT quality probe (`./Audit/run-quality4.sh 120`) preserves Apple's `numberOfInterpolatedFrames=2` configuration and all three phases `[.25,.5,.75]`. Against the real recorded 60fps midpoint (phase .5 only), median generated luma PSNR was 46.99 dB, versus held frame 49.21 dB and pixel blend 56.41 dB, across 120 pairs. This clip has no 120fps truth for phases .25 and .75. Native 120fps gameplay/CGI ground truth and perceptual ghosting evaluation remain open.
+
+## Automated display transition exercise
+
+An opt-in `--ui-stress` reference-app test automatically exercised five phases on the connected pair of LG screens: primary window, fullscreen enter, fullscreen exit, rotated secondary display, primary return. Over 24 seconds, neither Metal nor VideoToolbox reported an error, and there were no nil drawables. Fresh FPS recovered to ~59.2 on the secondary and ~59.3 on the primary after transitions. Fullscreen entry/exit temporarily lowered frame rates to ~48–51 FPS, and the cumulative display-link callback deadline misses rose to 63. This does not provide optical evidence of zero black frames, tearing or flicker, but confirms window/display changes do not deadlock the display scheduler in this test.
+
+## Additional sustained and platform status
+
+The isolated adaptive fallback run at t=110 s changed 4×→2× after persistent over-budget batches. At 180–200 s, adaptive produced mean 59.5 FPS (minimum per-second 55.9), compared with fixed 4× mean 27.0 (minimum 20.0); software source→presentation P99 was 94.7 versus 228.5 ms. The adaptive route trades early synthetic peak FPS for a higher sustained floor. Neither run had Metal/VT command errors. Hardware display light output and controller input were not measured.
+
+The system-wide GPU utilization counter may report zero while actual GPU execution accumulates. The library separately exposes `gpuCommandWorkPercent` as a *command-buffer work proxy*, not total GPU utilization.
+
+Session identity is mandatory for reproducible live tests. In addition to immutable input buffer ownership, `--run-id=<safe-id>` separates both the replay ring and JSONL log by name. Some early purported backend and fallback tests were invalid due to the pre-fix property-copy omission or cross-run log interference; do not reuse those numbers.
+
+## Extended compatibility and final SDK release-candidate screening
+
+Some UVC capture devices can output full-range (420f) NV12 rather than the limited-range (420v) NV12 accepted by the original SDK. Sending 420f directly to Apple's VTFrameProcessor returned `VTFrameProcessorErrorDomain -19740` with underlying error `-50` on this Mac. Merely allowing the pixel format would produce interpolation errors.
+
+Implemented bounded input-pool normalization from 420f to 420v with exact Y and UV range mapping before VideoToolbox. The SDK stores the unmodified original buffer for sampled-hash plus exact duplicate verification, and retains normalized buffers through GPU completion. A full-range 2x GPU regression passes without VideoToolbox/Metal errors. SDK internal tests verify full-range black (Y=0) maps to limited-range Y=16, white (255) to 235, neutral UV=128 remains 128, and a BT.601 YCbCr attachment survives conversion. The Metal conversion shader selects BT.601, BT.709 or BT.2020 coefficients using the supplied CoreVideo color matrix attachment; the default is BT.709. Native P010/HDR10/PQ/HLG transfer handling is NOT implemented.
+
+A 150-sample 1920x1080 full-range→video-range CPU normalization microbenchmark on the M5 recorded P50=0.615 ms, P95=0.640 ms and P99=0.667 ms. This is a CPU-only conversion microbenchmark and should not be conflated with GPU frame generation or real capture-card latency. The AVCaptureVideoDataOutput adapter selects limited-range NV12 if supported, otherwise full-range NV12. Real UVC hardware negotiation remains unverified.
+
+The final 21-second live 30→60 SDK run (seed 20261125) after the color changes recorded rolling fresh FPS 60.0; last-12s mean 59.75 FPS (min 58.95), processing P95 22.65 ms, presentation gap P99 30.31 ms, source-to-presentation P99 93.80 ms, adaptive playout delay 77.45 ms, memory 458.19 MiB, application CPU 19.0% of one core, 6 scaled texture allocations and 1242 reuses, no GPU/VT processing errors, and no dropped audio buffers. System-wide IOKit GPU counter returned 0%; measured Metal command-buffer work was nonzero (11.86% of elapsed time). The latter metric is GPU command-busy time for this pipeline, NOT overall GPU utilization or input-to-photon latency. Both the full SDK Objective-C regression suite and an external SwiftPM consumer build passed.
+
+Nine additional randomized/seeded replay runs (source30@2x/4x, source60@2x; random seed0 and seeds112358,314159) had zero GPU, VT, audio or ingress errors. Fresh FPS ranged 58.3–59.6 for 30→60, 111.0–116.6 for 30→120, and 103.3–106.4 for 60→120 across those short sessions. They do not replace longer endurance tests.
+
+Full machine-readable **verified** aggregate metrics and provenance are in `Audit/verified-results.json`, generated from the original per-run JSONL logs by `Audit/export-results.py`. Raw copyrighted test footage and raw JSONL traces are not committed.

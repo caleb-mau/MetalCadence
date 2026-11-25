@@ -10,10 +10,11 @@ stop_audit_apps() {
  pkill -x VirtualCapture 2>/dev/null || true
  sleep 1
  for proc in FrameLabSDK VirtualCapture; do
-  pgrep -x "$proc" 2>/dev/null | while read -r pid; do
+  for pid in $(pgrep -x "$proc" 2>/dev/null || true); do
    kill -KILL "$pid" 2>/dev/null || true
   done
  done
+ sleep 1
 }
 for spec in 30-1 30-2 30-4 60-1 60-2; do
  stop_audit_apps
