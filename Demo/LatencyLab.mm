@@ -40,7 +40,8 @@ static const int LabHeight = 720;
 @property double lastLeftTime, lastRightTime;
 @property NSUInteger previousLeftFrames, previousRightFrames;
 @property double lastReportAt, leftFPS, rightFPS, startedAt;
-\n @property NSUInteger occludedReportSamples;
+
+@property NSUInteger occludedReportSamples;
 @property float refreshRate;
 - (void)triggerAction;
 - (void)resizeContent;
