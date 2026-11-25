@@ -218,7 +218,7 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
         NSLog(@"MC_LATENCY_ENGINE_ERROR %@", error);
         return NO;
     }
-    __weak typeof(self) weakSelf = self;
+    __weak MCLatencyLab *weakSelf = self;
     engine.onFreshFramePresented = ^(double source, double presented, int64_t frameID) {
         (void)frameID;
         [weakSelf didPresentSource:source time:presented isEnhanced:enhanced];
