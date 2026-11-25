@@ -577,6 +577,9 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
     self.events = [NSMutableArray array];
     self.windowCapture = [MCWindowCapture new];
     self.captureStatus = @"Synthetic source";
+    self.clipSource = [MCLocalClipSource new];
+    self.clipStatus = @"Synthetic source";
+    self.clipTest = [NSProcessInfo.processInfo.arguments containsObject:@"--clip-test"];
     self.refreshRate = MAX(30, NSScreen.mainScreen.maximumFramesPerSecond ?: 60);
     self.selfTest = [NSProcessInfo.processInfo.arguments containsObject:@"--self-test"];
     NSString *dir = [NSHomeDirectory()
@@ -609,7 +612,7 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
                     backing:NSBackingStoreBuffered
                       defer:NO];
     self.window.title = @"MetalCadence · Interactive Latency Lab";
-    if (self.selfTest) {
+    if (self.selfTest || self.clipTest) {
         self.window.level = NSFloatingWindowLevel;
         self.window.collectionBehavior = NSWindowCollectionBehaviorCanJoinAllSpaces;
     }
