@@ -504,6 +504,13 @@ static MCPipelineBundle *MCProductionPipelines(id<MTLDevice> device,
                    [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
                    [enc endEncoding];
                }];
+    _scheduler.onFreshFramePresented =
+        ^(CFTimeInterval sourceTime, CFTimeInterval presentedTime, int64_t frameID) {
+            MCVideoEngine *engine = weak;
+            MCFramePresentedBlock callback = engine.onFreshFramePresented;
+            if (callback)
+                callback(sourceTime, presentedTime, frameID);
+        };
     _scheduler.useDedicatedRenderThread = c.dedicatedPresentationThread;
     _scheduler.skipHeldDraws = c.skipRedundantPresentations;
     _scheduler.heldRefreshDrawEvery = c.heldRefreshDrawEvery;
