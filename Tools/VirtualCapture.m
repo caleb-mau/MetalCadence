@@ -1,0 +1,41 @@
+#import <Foundation/Foundation.h>
+#import <Metal/Metal.h>
+#import <AVFoundation/AVFoundation.h>
+#import <QuartzCore/QuartzCore.h>
+#import <mach/mach_time.h>
+#import <pthread.h>
+#import <sys/mman.h>
+#import <sys/stat.h>
+#import <fcntl.h>
+#import <unistd.h>
+#import <math.h>
+#import "VirtualCapture.h"
+#import "SceneShader.h"
+@interface Replay : NSObject
+@property AVURLAsset *asset;
+@property AVAssetReader *reader;
+@property AVAssetReaderTrackOutput *output;
+-(BOOL)reset;
+-(BOOL)read:(unsigned char*)bytes;
+@end
+@implementation Replay
+-(BOOL)reset {NSError *error=nil;self.reader=[[AVAssetReader alloc]initWithAsset:self.asset error:&error];AVAssetTrack *track=[[self.asset tracksWithMediaType:AVMediaTypeVideo] firstObject];if(!track||!self.reader)return NO;self.output=[[AVAssetReaderTrackOutput alloc]initWithTrack:track outputSettings:@{(id)kCVPixelBufferPixelFormatTypeKey:@(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange)}];self.output.alwaysCopiesSampleData=NO;if(![self.reader canAddOutput:self.output])return NO;[self.reader addOutput:self.output];return [self.reader startReading];}
+-(BOOL)read:(unsigned char*)bytes {CMSampleBufferRef a=[self.output copyNextSampleBuffer];if(!a){if(![self reset])return NO;a=[self.output copyNextSampleBuffer];if(!a)return NO;}CVPixelBufferRef p=CMSampleBufferGetImageBuffer(a);if(!p||CVPixelBufferGetWidth(p)!=VC_W||CVPixelBufferGetHeight(p)!=VC_H){CFRelease(a);return NO;}CVPixelBufferLockBaseAddress(p,kCVPixelBufferLock_ReadOnly);for(int plane=0;plane<2;plane++){const uint8_t *src=CVPixelBufferGetBaseAddressOfPlane(p,plane);size_t stride=CVPixelBufferGetBytesPerRowOfPlane(p,plane);uint8_t *dst=bytes+(plane?VC_W*VC_H:0);for(int y=0;y<(plane?VC_H/2:VC_H);y++)memcpy(dst+y*VC_W,src+y*stride,VC_W);}CVPixelBufferUnlockBaseAddress(p,kCVPixelBufferLock_ReadOnly);CFRelease(a);CMSampleBufferRef skip=[self.output copyNextSampleBuffer];if(skip)CFRelease(skip);return YES;}
+@end
+int main(int argc,const char **argv){@autoreleasepool{
+ NSString *base=[NSHomeDirectory() stringByAppendingPathComponent:@"Library/Application Support/MetalCadence"];[[NSFileManager defaultManager]createDirectoryAtPath:base withIntermediateDirectories:YES attributes:nil error:nil];NSString *path=[base stringByAppendingPathComponent:@"capture.ring"];int fd=open(path.fileSystemRepresentation,O_RDWR|O_CREAT|O_TRUNC,0600);if(fd<0||ftruncate(fd,sizeof(VCRing)))return 2;VCRing *ring=mmap(NULL,sizeof(VCRing),PROT_READ|PROT_WRITE,MAP_SHARED,fd,0);if(ring==MAP_FAILED)return 3;memset(ring,0,sizeof(*ring));ring->magic=VC_MAGIC;
+ BOOL stress=[NSProcessInfo.processInfo.arguments containsObject:@"--3d"];Replay *replay=nil;if(!stress){replay=[Replay new];replay.asset=[AVURLAsset URLAssetWithURL:[NSURL fileURLWithPath:[base stringByAppendingPathComponent:@"replay.mp4"]] options:nil];if(![replay reset]){NSLog(@"Replay unavailable; supply 1920x1080 60fps replay.mp4 in Application Support/MetalCadence or use --3d.");return 5;}}
+ id<MTLDevice> dev=stress?MTLCreateSystemDefaultDevice():nil;NSError *err=nil;id<MTLLibrary> lib=stress?[dev newLibraryWithSource:shader options:nil error:&err]:nil;if(stress&&!lib){NSLog(@"shader %@",err);return 4;}id<MTLComputePipelineState> pipeline=[dev newComputePipelineStateWithFunction:[lib newFunctionWithName:@"generate"] error:&err];id<MTLCommandQueue> q=[dev newCommandQueue];
+ MTLTextureDescriptor *yd=[MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatR8Unorm width:VC_W height:VC_H mipmapped:NO];yd.storageMode=MTLStorageModeShared;yd.usage=MTLTextureUsageShaderWrite;id<MTLTexture> y=[dev newTextureWithDescriptor:yd];MTLTextureDescriptor *ud=[MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRG8Unorm width:VC_W/2 height:VC_H/2 mipmapped:NO];ud.storageMode=MTLStorageModeShared;ud.usage=MTLTextureUsageShaderWrite;id<MTLTexture> uv=[dev newTextureWithDescriptor:ud];
+ unsigned char *frame=malloc(VC_BYTES);mach_timebase_info_data_t tb;mach_timebase_info(&tb);double ticks=1e9*tb.denom/tb.numer;uint64_t start=mach_absolute_time();double origin=CACurrentMediaTime();uint64_t last=UINT64_MAX;double sceneOffset=arc4random_uniform(60000)/100.;
+ pthread_set_qos_class_self_np(QOS_CLASS_USER_INITIATED,0);
+ NSLog(@"VirtualCapture: independent 1080p60 NV12, 30 unique FPS, 48k stereo, randomized jitter; ring %@",path);
+ for(uint64_t i=0;;i++){@autoreleasepool{
+ uint64_t target=start+(uint64_t)(i*ticks/60.);mach_wait_until(target);double pts=origin+i/60.;uint64_t content=i/2;
+ if(content!=last){if(!stress){if(![replay read:frame])return 6;}else{float t=(float)(sceneOffset+content/30.);id<MTLCommandBuffer> cb=[q commandBuffer];id<MTLComputeCommandEncoder> e=[cb computeCommandEncoder];[e setComputePipelineState:pipeline];[e setTexture:y atIndex:0];[e setTexture:uv atIndex:1];[e setBytes:&t length:4 atIndex:0];[e dispatchThreads:MTLSizeMake(VC_W,VC_H,1) threadsPerThreadgroup:MTLSizeMake(16,8,1)];[e endEncoding];[cb commit];[cb waitUntilCompleted];[y getBytes:frame bytesPerRow:VC_W fromRegion:MTLRegionMake2D(0,0,VC_W,VC_H) mipmapLevel:0];[uv getBytes:frame+VC_W*VC_H bytesPerRow:VC_W fromRegion:MTLRegionMake2D(0,0,VC_W/2,VC_H/2) mipmapLevel:0];}last=content;}
+ uint32_t r=arc4random_uniform(1000);if(r<4){atomic_fetch_add(&ring->sourceDrops,1);continue;}usleep(arc4random_uniform(2200)+(r<17?6000:0));
+ uint64_t seq=i+1;VCSlot *s=&ring->slots[seq%VC_SLOTS];atomic_store_explicit(&s->stamp,seq*2+1,memory_order_seq_cst);s->pts=pts;s->arrival=CACurrentMediaTime();s->tick=i;s->audioFrames=VC_AUDIO;memcpy(s->pixels,frame,VC_BYTES);for(int j=0;j<VC_AUDIO;j++){double t=(i*VC_AUDIO+j)/48000.;float tone=.07*sin(2*M_PI*(85*t+7*sin(t*.4)))+.025*sin(2*M_PI*220*t);s->pcm[j*2]=tone;s->pcm[j*2+1]=tone*.85;}
+ atomic_store_explicit(&s->stamp,seq*2,memory_order_release);atomic_store_explicit(&ring->latest,seq,memory_order_release);atomic_store(&ring->heartbeat,seq);
+ if(CACurrentMediaTime()-pts>.12){uint64_t skip=(uint64_t)((CACurrentMediaTime()-origin)*60)-i;if(skip>0){atomic_fetch_add(&ring->sourceDrops,skip);i+=skip;}}
+ }}
+}}

@@ -6,3 +6,5 @@
 .DS_Store
 *.nv12
 *.mp4
+*.bak
+/Tools/VirtualCapture
