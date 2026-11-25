@@ -25,7 +25,7 @@ static CVPixelBufferRef MakeNV12Frame(int value) {
 
     CVPixelBufferLockBaseAddress(frame, 0);
     for (int plane = 0; plane < 2; plane++) {
-        uint8_t *pixels = CVPixelBufferGetBaseAddressOfPlane(frame, plane);
+        uint8_t *pixels = (uint8_t *)CVPixelBufferGetBaseAddressOfPlane(frame, plane);
         size_t stride = CVPixelBufferGetBytesPerRowOfPlane(frame, plane);
         size_t height = CVPixelBufferGetHeightOfPlane(frame, plane);
         size_t width = CVPixelBufferGetWidthOfPlane(frame, plane) * (plane ? 2 : 1);
@@ -38,13 +38,14 @@ static CVPixelBufferRef MakeNV12Frame(int value) {
     return frame;
 }
 
-static void TestOutputFrameCount(NSInteger multiplier) {
+static void TestOutputFrameCount(NSInteger multiplier, NSUInteger slots) {
     MCVideoConfiguration *configuration = [MCVideoConfiguration new];
     configuration.inputWidth = 1280;
     configuration.inputHeight = 720;
     configuration.outputWidth = 1920;
     configuration.outputHeight = 1080;
     configuration.multiplier = multiplier;
+    configuration.maxConcurrentGPUBatches = slots;
     configuration.audioEnabled = NO;
     configuration.presentation = MCVideoPresentationCompare;
 
@@ -116,9 +117,10 @@ static void TestOutputFrameCount(NSInteger multiplier) {
     assert([metrics[@"gpuErrors"] integerValue] == 0);
     assert(native == (multiplier == 1 ? processed : 0));
 
-    printf("OUTPUT-INTEGRITY %ldx source=%d processed=%ld scheduled=%ld "
+    printf("OUTPUT-INTEGRITY %ldx slots=%lu source=%d processed=%ld scheduled=%ld "
            "incomplete=0 rejected=0\n",
            (long)multiplier,
+           (unsigned long)slots,
            inputCount,
            (long)processed,
            (long)scheduled);
@@ -128,8 +130,9 @@ static void TestOutputFrameCount(NSInteger multiplier) {
 int main(void) {
     @autoreleasepool {
         if (@available(macOS 26.0, *)) {
-            TestOutputFrameCount(1);
-            TestOutputFrameCount(2);
+            TestOutputFrameCount(1, 1);
+            TestOutputFrameCount(2, 2);
+            TestOutputFrameCount(2, 3);
         } else {
             puts("Output test requires macOS 26 or later");
             return 2;

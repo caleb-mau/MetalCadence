@@ -38,7 +38,7 @@ int main() {
                                    &original) == kCVReturnSuccess);
         CVPixelBufferLockBaseAddress(original, 0);
         for (int plane = 0; plane < 2; plane++) {
-            uint8_t *data = CVPixelBufferGetBaseAddressOfPlane(original, plane);
+            uint8_t *data = (uint8_t *)CVPixelBufferGetBaseAddressOfPlane(original, plane);
             size_t stride = CVPixelBufferGetBytesPerRowOfPlane(original, plane),
                    height = CVPixelBufferGetHeightOfPlane(original, plane),
                    width = CVPixelBufferGetWidthOfPlane(original, plane) * (plane ? 2 : 1);

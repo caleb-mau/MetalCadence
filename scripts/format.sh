@@ -20,5 +20,19 @@ while IFS= read -r -d '' path; do
         xcrun clang-format -i "$path"
     fi
     count=$((count+1))
-done < <(find Audit Demo Sources Tests Tools -type f \( -name '*.m' -o -name '*.h' \) -print0)
+done < <(find Audit Demo Sources Tests Tools -type f \( -name '*.mm' -o -name '*.m' -o -name '*.hpp' -o -name '*.cpp' -o -name '*.h' \) ! -path '*/internal/MCProductionShaderSource.hpp' ! -path 'Tools/SceneShader.h' ! -path 'Tools/LegacyDemoShader.h' -print0)
+for shader in Shaders/*.metal; do
+    if [[ "${1:-}" == "--check" ]]; then
+        xcrun clang-format --dry-run --Werror --assume-filename=shader.cpp "$shader"
+    else
+        xcrun clang-format -i --assume-filename=shader.cpp "$shader"
+    fi
+done
+
+if [[ "${1:-}" == "--check" ]]; then
+    python3 Tools/generate-shaders.py --check
+else
+    python3 Tools/generate-shaders.py
+fi
+
 echo "clang-format ${1:---write} passed for $count files"

@@ -27,7 +27,7 @@ static double quality(CVPixelBufferRef pred,
     const uint8_t *a[4];
     size_t strides[4];
     for (int i = 0; i < 4; i++) {
-        a[i] = CVPixelBufferGetBaseAddressOfPlane(frames[i], 0);
+        a[i] = (const uint8_t *)CVPixelBufferGetBaseAddressOfPlane(frames[i], 0);
         strides[i] = CVPixelBufferGetBytesPerRowOfPlane(frames[i], 0);
     }
     double fg = 0, hd = 0, ln = 0, bad = 0, n = 0;

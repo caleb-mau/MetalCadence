@@ -1,4 +1,4 @@
-# MetalCadence Objective-C and C formatting policy.
+# MetalCadence Objective-C++20, C++ and Objective-C header formatting policy.
 BasedOnStyle: LLVM
 ColumnLimit: 100
 IndentWidth: 4

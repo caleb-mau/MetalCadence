@@ -8,6 +8,15 @@ int main() {
         MCWorkloadPlan *p = [[MCWorkloadPlan alloc] initWithProfile:game];
         assert(p.multiplier == 2 && p.targetFreshFPS == 60 && p.minimumDelay < .045);
         MCVideoConfiguration *c = [MCVideoConfiguration configurationWithProfile:game];
+        c.gpuTextureBudgetMiB = 384;
+        c.maxCachedTexturesPerPool = 16;
+        c.preallocatedTexturesPerPool = 8;
+        c.maxConcurrentGPUBatches = 3;
+        MCVideoConfiguration *copied = [c copy];
+        assert(copied.gpuTextureBudgetMiB == 384);
+        assert(copied.maxCachedTexturesPerPool == 16);
+        assert(copied.preallocatedTexturesPerPool == 8);
+        assert(copied.maxConcurrentGPUBatches == 3);
         assert(c.multiplier == 2 && c.profile.kind == MCWorkloadKindInteractiveGame);
         game.policy = MCFramePolicyMaximumThroughput;
         assert([[MCWorkloadPlan alloc] initWithProfile:game].multiplier == 4);
