@@ -263,7 +263,6 @@ int main(int argc, const char *argv[]) {
                 } else {
                     failed = !ConvertAndUpscale(inputFrame,
                                                 target,
-                                                device,
                                                 queue,
                                                 cache,
                                                 convert,
