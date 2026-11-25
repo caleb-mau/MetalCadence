@@ -190,6 +190,7 @@ static void TestAbruptGuard(bool nativeResolution, NSInteger multiplier = 2) {
     [engine stop];
     printf("ABRUPT-GUARD native=%d factor=%ld pairs=%d held=%d errors=0\n",
            nativeResolution,
+           (long)multiplier,
            inputCount - 1,
            inputCount - 1);
 }
