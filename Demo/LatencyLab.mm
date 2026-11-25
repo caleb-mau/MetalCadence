@@ -531,25 +531,56 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
     [NSApp activateIgnoringOtherApps:YES];
 
     if (self.selfTest) {
-        __block NSInteger samples = 0;
-        [NSTimer scheduledTimerWithTimeInterval:1.6
-                                        repeats:YES
-                                          block:^(NSTimer *timer) {
-                                              [self triggerAction];
-                                              if (++samples >= 6) {
-                                                  [timer invalidate];
-                                                  dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-                                                                               3 * NSEC_PER_SEC),
-                                                                 dispatch_get_main_queue(),
-                                                                 ^{
-                                                                     [NSApp terminate:nil];
-                                                                 });
-                                              }
-                                          }];
+        for (NSInteger index = 0; index < 6; ++index) {
+            dispatch_after(
+                dispatch_time(DISPATCH_TIME_NOW, (int64_t)((1.6 + index * 1.6) * NSEC_PER_SEC)),
+                dispatch_get_main_queue(),
+                ^{
+                    [self triggerAction];
+                    if (index == 5) {
+                        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC),
+                                       dispatch_get_main_queue(),
+                                       ^{
+                                           [NSApp terminate:nil];
+                                       });
+                    }
+                });
+        }
     }
 }
 - (void)applicationWillTerminate:(NSNotification *)notification {
     (void)notification;
+    NSDictionary *left = [self.leftEngine metrics];
+    NSDictionary *right = [self.rightEngine metrics];
+    NSDictionary *summary = @{
+        @"kind" : @"summary",
+        @"inputEvents" : @(self.inputIndex),
+        @"sourceFrames" : @(self.sourceFrames),
+        @"displayHz" : @(self.refreshRate),
+        @"bufferMode" : self.buffer.titleOfSelectedItem ?: @"unknown",
+        @"leftPresented" : left[@"presented"] ?: @0,
+        @"rightPresented" : right[@"presented"] ?: @0,
+        @"leftSourceToPresentP50Ms" : left[@"sourceToPresentP50Ms"] ?: @0,
+        @"rightSourceToPresentP50Ms" : right[@"sourceToPresentP50Ms"] ?: @0,
+        @"leftSourceToPresentP99Ms" : left[@"sourceToPresentP99Ms"] ?: @0,
+        @"rightSourceToPresentP99Ms" : right[@"sourceToPresentP99Ms"] ?: @0,
+        @"rightGapP99Ms" : right[@"gapP99Ms"] ?: @0,
+        @"rightSuperseded" : right[@"superseded"] ?: @0,
+        @"rightOverflow" : right[@"overflow"] ?: @0,
+        @"rightProcessingP95Ms" : right[@"processingP95Ms"] ?: @0,
+        @"rightPlayoutDelayMs" : right[@"playoutDelayMs"] ?: @0,
+        @"rightGPUErrorCount" : right[@"gpuErrors"] ?: @0,
+        @"rightInterpolationErrors" : right[@"interpolationErrors"] ?: @0
+    };
+    NSData *data = [NSJSONSerialization dataWithJSONObject:summary options:0 error:nil];
+    NSFileHandle *file = [NSFileHandle fileHandleForWritingAtPath:self.logPath];
+    if (file) {
+        [file seekToEndOfFile];
+        [file writeData:data];
+        uint8_t newline = 10;
+        [file writeData:[NSData dataWithBytes:&newline length:1]];
+        [file closeFile];
+    }
     [self.sourceTimer invalidate];
     [self.metricsTimer invalidate];
     self.leftEngine.onFreshFramePresented = nil;
