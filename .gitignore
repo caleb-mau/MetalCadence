@@ -1,0 +1,8 @@
+.build/
+.swiftpm/
+*.app/
+*.jsonl
+*.log
+.DS_Store
+*.nv12
+*.mp4
