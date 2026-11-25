@@ -1,4 +1,7 @@
 #import "MetalCadence.h"
+#if !__has_feature(objc_arc)
+#error MetalCadence requires ARC
+#endif
 #import <os/lock.h>
 #import <math.h>
 NSInteger MCSelectDueFrame(const double *pts, NSUInteger count, double target, double lateLimit){NSInteger last=-1;for(NSUInteger i=0;i<count&&pts[i]<=target+.001;i++){last=(NSInteger)i;if(target-pts[i]<=lateLimit)return (NSInteger)i;}return last;}

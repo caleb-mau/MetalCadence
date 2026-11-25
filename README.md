@@ -17,7 +17,7 @@ swift build
 open FrameLabCadence.app
 ```
 
-For the original 1080p60 reference clip, the demo looks for ~/Desktop/FrameLab/test.nv12, produced by the original FrameLab benchmark. Without it, the procedural driving scene is available. No video assets are included in this repository.
+For the original 1080p60 reference clip, the demo looks for ~/Library/Application Support/MetalCadence/test.nv12, produced by the original FrameLab benchmark. Without it, the procedural driving scene is available. No video assets are included in this repository.
 
 ## API
 
@@ -30,7 +30,7 @@ Use strictly increasing IDs and monotonic host-clock PTS. A fixed-refresh displa
 
 ## Status
 
-Experimental, pre-release. API and lifecycle not production hardened. Demo is not a complete gaming or capture client. See metrics.jsonl locally for measurements. The package builds and policy tests run via test.sh. No independent latency or display photodiode measurements yet.
+Experimental, pre-release. API and lifecycle not production hardened. Demo is not a complete gaming or capture client. See ~/Library/Application Support/MetalCadence/metrics.jsonl locally for measurements. The package builds and policy tests run via test.sh. No independent latency or display photodiode measurements yet.
 
 ## References
 
