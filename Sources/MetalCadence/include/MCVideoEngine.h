@@ -57,6 +57,9 @@ API_AVAILABLE(macos(26.0))
 /// The engine retains buffers as needed.
 API_AVAILABLE(macos(26.0))
 @interface MCVideoEngine : NSObject
+/// Optional low-cost test instrumentation. Called after a fresh drawable is presented.
+/// Software drawable time, not measured physical photons.
+@property (atomic, copy, nullable) MCFramePresentedBlock onFreshFramePresented;
 @property (nonatomic, readonly, copy) MCVideoConfiguration *configuration;
 @property (atomic) MCVideoPresentation presentation;
 @property (atomic) BOOL muted;

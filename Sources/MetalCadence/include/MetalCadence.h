@@ -30,6 +30,11 @@ FOUNDATION_EXPORT NSInteger MCSelectDueFrameWithMode(const double *pts,
                 sourceTime:(CFTimeInterval)sourceTime
                    payload:(id)payload;
 @end
+/// Software drawable-presentation callback. Not a display photodiode measurement.
+/// Invoked on Metal's presentation callback queue; never block or touch AppKit here.
+typedef void (^MCFramePresentedBlock)(CFTimeInterval sourceTime,
+                                      CFTimeInterval presentedTime,
+                                      int64_t frameID);
 typedef void (^MCEncodeBlock)(id<MTLCommandBuffer> commandBuffer,
                               id<CAMetalDrawable> drawable,
                               MCFrame *frame);
@@ -43,6 +48,7 @@ typedef struct {
 /// (CACurrentMediaTime). Start/stop on the main thread; submit from any producer thread. Encode
 /// must be nonblocking.
 @interface MCDisplayScheduler : NSObject <CAMetalDisplayLinkDelegate>
+@property (atomic, copy, nullable) MCFramePresentedBlock onFreshFramePresented;
 @property (nonatomic, readonly) NSUInteger capacity;
 @property (nonatomic, readonly) NSUInteger maxInFlight;
 @property (nonatomic) CFTimeInterval maxFrameLateness;

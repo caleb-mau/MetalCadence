@@ -254,3 +254,25 @@ and reproducible commands. The [verified results](Audit/verified-presentation-v2
 are generated from isolated local sessions. The default P99 latency target
 has **not** been met. Do not assume a requested 120 Hz rate was physically
 delivered without checking the observed callback and monitor refresh metrics.
+
+
+## Interactive latency lab (macOS 26+)
+
+Run \`./build-latency-lab.sh && open MetalCadenceLatencyLab.app\`.
+This is a controllable *synthetic* 30 FPS source. The left side is a separate
+native 1×/30 FPS path with no configured playout buffer. The right side uses
+actual VideoToolbox interpolation at 2×/60 FPS or 4×/120 FPS, with independently
+selectable adaptive or fixed playout budgets. Both engines receive the same
+timestamps and CVPixelBuffers. Press **Space**, an arrow key, or **Swap Target**
+to create an abrupt scene change and observe the difference.
+
+The numeric input-to-presentation response is measured from the Mac input
+handler to the first fresh drawable presenting the source frame containing
+that input. This is a **software** measurement, not controller-to-photon,
+HDMI capture latency or LCD scanout. The 4× mode can only be observed at
+120 unique presentations on a 120 Hz or faster active display. Scene-cut
+artifacts and timing differences are intentionally visible.
+
+Run \`open MetalCadenceLatencyLab.app --args --self-test\` for six automatically
+triggered actions. JSON event pairs are written to
+\`~/Library/Application Support/MetalCadence/latency-lab-*.jsonl\`.

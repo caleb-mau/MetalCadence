@@ -348,10 +348,12 @@ NSInteger MCSelectDueFrame(const double *pts, NSUInteger count, double target, d
 
         [d addPresentedHandler:^(id<MTLDrawable> drawable) {
             double t = drawable.presentedTime;
+            BOOL notifyFresh = NO;
             os_unfair_lock_lock(&self->_lock);
             if (t > 0) {
                 self->_presented++;
                 if (f.identifier > self->_lastDisplayedID) {
+                    notifyFresh = YES;
                     self->_lastDisplayedID = f.identifier;
                     self->_freshPresented++;
                     self->_selectToPresentWindow.record(MAX(0, t - now) * 1000);
@@ -375,6 +377,11 @@ NSInteger MCSelectDueFrame(const double *pts, NSUInteger count, double target, d
                 }
             }
             os_unfair_lock_unlock(&self->_lock);
+            if (notifyFresh) {
+                MCFramePresentedBlock callback = self.onFreshFramePresented;
+                if (callback)
+                    callback(f.sourceTime, t, f.identifier);
+            }
         }];
         double committedAt = CACurrentMediaTime();
         [cb addCompletedHandler:^(id<MTLCommandBuffer> c) {
