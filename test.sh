@@ -15,3 +15,7 @@ xcrun clang++ -std=c++20 -O2 -I Sources/MetalCadence     Tests/timing-window.mm 
 # Repeated run-loop startup/shutdown must not orphan the presentation thread.
 xcrun clang++ -std=c++20 -O2 -fobjc-arc -I Sources/MetalCadence/include     Sources/MetalCadence/MetalCadence.mm Tests/presentation-thread.mm     -framework Foundation -framework Metal -framework QuartzCore     -o /tmp/metalcadence-presentation-thread-test
 /tmp/metalcadence-presentation-thread-test
+
+# Exercise the platform-independent deadline selector and overdue pressure policy.
+xcrun clang++ -std=c++20 -O2 -I Sources/MetalCadence Tests/scheduler-policy.cpp -o /tmp/metalcadence-scheduler-policy-test
+/tmp/metalcadence-scheduler-policy-test

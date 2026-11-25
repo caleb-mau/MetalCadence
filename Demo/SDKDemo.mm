@@ -11,6 +11,7 @@
 @property NSWindow *window;
 @property MTKView *view;
 @property NSTextField *stats, *details;
+@property NSArray<NSTextField *> *metricValues;
 @property NSPopUpButton *mode, *rate, *workloads, *policies, *producers, *interpolation;
 @property NSButton *mute, *fallbackToggle;
 @property (atomic) MCVideoEngine *engine;
@@ -110,6 +111,8 @@
     self.lastElapsed = 0;
     self.lastPresented = 0;
     self.lastCPU = 0;
+    self.lastCallbackElapsed = 0;
+    self.lastCallbackCount = 0;
 }
 - (void)readLoop {
     NSString *path = [self.base
@@ -254,7 +257,7 @@
     double elapsed = [m[@"elapsed"] doubleValue], cpu = [m[@"cpuSeconds"] doubleValue];
     long presented = [m[@"presented"] longValue];
     double delta = elapsed - self.lastElapsed;
-    double fps = delta > 0 ? (presented - self.lastPresented) / delta : 0,
+    double fps = self.lastElapsed && delta > 0 ? (presented - self.lastPresented) / delta : 0,
            cpuPct = self.lastElapsed && delta > 0 ? (cpu - self.lastCPU) / delta * 100 : 0;
     self.lastElapsed = elapsed;
     self.lastCPU = cpu;
@@ -304,6 +307,15 @@
                             ? [NSString stringWithFormat:@"system %d%%", gpu]
                             : [NSString stringWithFormat:@"command %.0f%%",
                                                          [m[@"gpuCommandWorkPercent"] doubleValue]];
+    NSArray<NSString *> *values = @[
+        [NSString stringWithFormat:@"%.1f fps", fps],
+        [NSString stringWithFormat:@"%.1f ms", [m[@"playoutDelayMs"] doubleValue]],
+        [NSString stringWithFormat:@"%.1f ms", [m[@"processingP95Ms"] doubleValue]],
+        [NSString stringWithFormat:@"%.0f MiB", [m[@"memoryMiB"] doubleValue]],
+        [NSString stringWithFormat:@"%@×", m[@"activeMultiplier"] ?: @0]
+    ];
+    for (NSUInteger i = 0; i < self.metricValues.count; i++)
+        self.metricValues[i].stringValue = values[i];
     self.stats.stringValue =
         [NSString stringWithFormat:@"%.1f FPS   •   playout %.1f ms   •   P95 %.1f ms   •   P99 "
                                    @"%.1f ms   •   GPU %@   •   CPU %.0f%%   •   RAM %.0f MiB",
@@ -404,7 +416,9 @@
                             NSWindowStyleMaskResizable | NSWindowStyleMaskMiniaturizable
                     backing:NSBackingStoreBuffered
                       defer:NO];
-    self.window.title = @"MetalCadence SDK • Live capture benchmark";
+    self.window.title = @"MetalCadence";
+    self.window.minSize = NSMakeSize(1190, 540);
+    self.window.appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
     self.window.delegate = self;
     [self.window center];
     BOOL benchmark = [NSProcessInfo.processInfo.arguments containsObject:@"--benchmark"];
@@ -415,12 +429,56 @@
     if (benchmark && !uiStress)
         self.window.level = NSFloatingWindowLevel;
     NSView *root = self.window.contentView;
-    self.view = [[MTKView alloc] initWithFrame:NSMakeRect(0, 120, 1300, 660)
+    root.wantsLayer = YES;
+    root.layer.backgroundColor = [NSColor colorWithWhite:.075 alpha:1].CGColor;
+    self.view = [[MTKView alloc] initWithFrame:NSMakeRect(0, 196, 1300, 584)
                                         device:MTLCreateSystemDefaultDevice()];
     self.view.paused = YES;
     self.view.enableSetNeedsDisplay = NO;
     self.view.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
     [root addSubview:self.view];
+    NSView *dashboard = [[NSView alloc] initWithFrame:NSMakeRect(12, 124, 1276, 64)];
+    dashboard.autoresizingMask = NSViewWidthSizable;
+    NSStackView *cards = [[NSStackView alloc] initWithFrame:dashboard.bounds];
+    cards.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    cards.distribution = NSStackViewDistributionFillEqually;
+    cards.spacing = 10;
+    cards.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+    NSMutableArray<NSTextField *> *metricValues = [NSMutableArray array];
+    for (NSString *heading in @[
+             @"FRESH OUTPUT",
+             @"PLAYOUT BUFFER",
+             @"PROCESSING P95",
+             @"APP MEMORY",
+             @"ACTIVE GENERATION"
+         ]) {
+        NSView *card = [NSView new];
+        card.wantsLayer = YES;
+        card.layer.backgroundColor = [NSColor colorWithWhite:.13 alpha:1].CGColor;
+        card.layer.cornerRadius = 9;
+        NSTextField *label = [NSTextField labelWithString:heading];
+        label.font = [NSFont systemFontOfSize:10 weight:NSFontWeightSemibold];
+        label.textColor = NSColor.secondaryLabelColor;
+        NSTextField *value = [NSTextField labelWithString:@"Waiting"];
+        value.font = [NSFont monospacedDigitSystemFontOfSize:22 weight:NSFontWeightMedium];
+        label.translatesAutoresizingMaskIntoConstraints = NO;
+        value.translatesAutoresizingMaskIntoConstraints = NO;
+        [card addSubview:label];
+        [card addSubview:value];
+        [NSLayoutConstraint activateConstraints:@[
+            [label.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:12],
+            [label.topAnchor constraintEqualToAnchor:card.topAnchor constant:9],
+            [value.leadingAnchor constraintEqualToAnchor:label.leadingAnchor],
+            [value.topAnchor constraintEqualToAnchor:label.bottomAnchor constant:3],
+            [value.trailingAnchor constraintLessThanOrEqualToAnchor:card.trailingAnchor constant:-8]
+        ]];
+        [cards addArrangedSubview:card];
+        [card.heightAnchor constraintEqualToConstant:64].active = YES;
+        [metricValues addObject:value];
+    }
+    self.metricValues = metricValues;
+    [dashboard addSubview:cards];
+    [root addSubview:dashboard];
     self.mode = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(12, 56, 230, 26) pullsDown:NO];
     [self.mode addItemsWithTitles:@[
         @"Compare: native | enhanced",
@@ -492,14 +550,17 @@
     self.producers.action = @selector(changeProfile:);
     self.producers.target = self;
     [root addSubview:self.producers];
-    if ([NSProcessInfo.processInfo.arguments containsObject:@"--benchmark"])
+    if (benchmark) {
         self.rate.enabled = NO;
-    self.mode.enabled = NO;
-    self.workloads.enabled = NO;
-    self.policies.enabled = NO;
-    self.producers.enabled = NO;
-    self.interpolation.enabled = NO;
-    self.fallbackToggle.enabled = NO;
+        self.mode.enabled = NO;
+        self.workloads.enabled = NO;
+        self.policies.enabled = NO;
+        self.producers.enabled = NO;
+        self.interpolation.enabled = NO;
+        self.fallbackToggle.enabled = NO;
+    } else {
+        [self.mode selectItemAtIndex:MCVideoPresentationEnhanced];
+    }
     self.mute = [NSButton checkboxWithTitle:@"Mute" target:self action:@selector(changeMute:)];
     self.mute.frame = NSMakeRect(415, 56, 100, 26);
     self.mute.state = [NSProcessInfo.processInfo.arguments containsObject:@"--benchmark"]

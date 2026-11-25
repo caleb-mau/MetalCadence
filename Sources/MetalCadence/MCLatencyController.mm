@@ -1,8 +1,10 @@
 #import "MCLatencyController.h"
 #import <math.h>
-@interface MCLatencyController ()
-@property NSMutableArray<NSNumber *> *samples;
-@property NSMutableArray<NSNumber *> *audioSamples;
+#include "internal/MCFixedTimingWindow.hpp"
+@interface MCLatencyController () {
+    metalcadence::FixedTimingWindow<96> _samples;
+    metalcadence::FixedTimingWindow<96> _audioSamples;
+}
 @property double audioReadyP95, audioReadyP99, audioMinimumDelay, audioRecoverySafety;
 @property double effectiveAudioFloor;
 @property NSUInteger audioCleanPackets, audioDeadlineMisses;
@@ -27,28 +29,16 @@
     _initialDelay = isfinite(initial) ? MAX(_minimumDelay, MIN(_maximumDelay, initial)) : .075;
     _delay = _initialDelay;
     _policy = policy;
-    _samples = [NSMutableArray arrayWithCapacity:96];
-    _audioSamples = [NSMutableArray arrayWithCapacity:96];
     return self;
-}
-- (double)percentile:(NSArray<NSNumber *> *)sorted fraction:(double)fraction {
-    if (!sorted.count)
-        return 0;
-    NSUInteger i = (NSUInteger)floor((sorted.count - 1) * MAX(0, MIN(1, fraction)));
-    return sorted[i].doubleValue;
 }
 - (void)observeAudioSchedulingAge:(double)sourceAge {
     if (!isfinite(sourceAge) || sourceAge < 0 || sourceAge > .2)
         return;
 
     @synchronized(self) {
-        [_audioSamples addObject:@(sourceAge)];
-        if (_audioSamples.count > 96)
-            [_audioSamples removeObjectAtIndex:0];
-
-        NSArray<NSNumber *> *sorted = [_audioSamples sortedArrayUsingSelector:@selector(compare:)];
-        _audioReadyP95 = [self percentile:sorted fraction:.95];
-        _audioReadyP99 = [self percentile:sorted fraction:.99];
+        _audioSamples.record(sourceAge);
+        _audioReadyP95 = _audioSamples.percentile(.95);
+        _audioReadyP99 = _audioSamples.percentile(.99);
         _audioObservations++;
         _audioCleanPackets++;
 
@@ -81,14 +71,11 @@
         double refresh =
             isfinite(refreshPeriod) ? MAX(1. / 240, MIN(1. / 24, refreshPeriod)) : 1. / 60;
         double phase = isfinite(outputInterval) ? MAX(1. / 240, MIN(.1, outputInterval)) : 1. / 60;
-        [_samples addObject:@(readyAge)];
-        if (_samples.count > 96)
-            [_samples removeObjectAtIndex:0];
+        _samples.record(readyAge);
         _observationCount++;
-        NSArray<NSNumber *> *sorted = [_samples sortedArrayUsingSelector:@selector(compare:)];
-        _p50Ready = [self percentile:sorted fraction:.50];
-        _p90Ready = [self percentile:sorted fraction:.90];
-        _p95Ready = [self percentile:sorted fraction:.95];
+        _p50Ready = _samples.percentile(.50);
+        _p90Ready = _samples.percentile(.90);
+        _p95Ready = _samples.percentile(.95);
         double percentile = .85;
         switch (_policy) {
         case MCFramePolicyLowestLatency:
@@ -107,7 +94,7 @@
             percentile = .85;
             break;
         }
-        _quantileReady = [self percentile:sorted fraction:percentile];
+        _quantileReady = _samples.percentile(percentile);
         _refreshPeriod = refresh;
         _phaseInterval = phase;
         switch (_policy) {
@@ -163,7 +150,7 @@
         // Rapid response to missed deadlines, but bounded to avoid audible A/V jumps.
         if (goal > _delay) {
             double correction = MAX(.0015, (goal - _delay) * .55);
-            _delay = MIN(_maximumDelay, _delay + MIN(.008, correction));
+            _delay = MIN(goal, _delay + MIN(.008, correction));
             _raisingAdjustments++;
         } else if (goal < _delay) {
             // Decrease a few milliseconds per second to preserve audio scheduling continuity.
@@ -176,6 +163,11 @@
 - (double)currentDelay {
     @synchronized(self) {
         return _delay;
+    }
+}
+- (MCLatencyEstimate)estimate {
+    @synchronized(self) {
+        return {_quantileReady, _baseSafety + _pressureSafety};
     }
 }
 - (NSDictionary<NSString *, NSNumber *> *)metrics {

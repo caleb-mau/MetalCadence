@@ -12,6 +12,9 @@ int main() {
         for (int i = 0; i < 450; i++)
             [p recordBatchSeconds:.020 sourceInterval:1. / 30 thermalState:1];
         assert(p.activeMultiplier == 2 && p.recoveryProbes == 0);
+        for (int i = 0; i < 29; i++)
+            [p recordBatchSeconds:.020 sourceInterval:1. / 30 thermalState:0];
+        assert(p.activeMultiplier == 2);
         [p recordBatchSeconds:.020 sourceInterval:1. / 30 thermalState:0];
         assert(p.activeMultiplier == 4 && p.recoveryProbes == 1);
         [p recordBatchSeconds:.041 sourceInterval:1. / 30 thermalState:0];
@@ -25,6 +28,14 @@ int main() {
         for (int i = 0; i < 4; i++)
             [sustained recordBatchSeconds:.065 sourceInterval:1. / 30 thermalState:1];
         assert(sustained.activeMultiplier == 2);
-        puts("Frame budget controller: 8 assertions passed");
+        [p recordBatchSeconds:.012 sourceInterval:1. / 30 thermalState:2];
+        assert(p.activeMultiplier == 2);
+        for (int i = 0; i < 500; i++)
+            [p recordBatchSeconds:.040 sourceInterval:1. / 30 thermalState:0];
+        assert(p.activeMultiplier == 2);
+        for (int i = 0; i < 30; i++)
+            [p recordBatchSeconds:.020 sourceInterval:1. / 30 thermalState:0];
+        assert(p.activeMultiplier == 4);
+        puts("Frame budget controller: assertions passed");
     }
 }

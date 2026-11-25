@@ -38,12 +38,17 @@ static CVPixelBufferRef MakeNV12Frame(int value) {
     return frame;
 }
 
-static void TestOutputFrameCount(NSInteger multiplier, NSUInteger slots) {
+static void
+TestOutputFrameCount(NSInteger multiplier,
+                     NSUInteger slots,
+                     bool nativeResolution = false,
+                     MCInterpolationBackend backend = MCInterpolationBackendVideoToolbox) {
     MCVideoConfiguration *configuration = [MCVideoConfiguration new];
     configuration.inputWidth = 1280;
     configuration.inputHeight = 720;
-    configuration.outputWidth = 1920;
-    configuration.outputHeight = 1080;
+    configuration.outputWidth = nativeResolution ? 1280 : 1920;
+    configuration.outputHeight = nativeResolution ? 720 : 1080;
+    configuration.interpolationBackend = backend;
     configuration.multiplier = multiplier;
     configuration.maxConcurrentGPUBatches = slots;
     configuration.audioEnabled = NO;
@@ -116,6 +121,9 @@ static void TestOutputFrameCount(NSInteger multiplier, NSUInteger slots) {
     assert([metrics[@"interpolationErrors"] integerValue] == 0);
     assert([metrics[@"gpuErrors"] integerValue] == 0);
     assert(native == (multiplier == 1 ? processed : 0));
+    assert([metrics[@"nativeResolutionBypass"] boolValue] == nativeResolution);
+    if (nativeResolution)
+        assert([metrics[@"nativeTextureAllocations"] integerValue] == 0);
 
     printf("OUTPUT-INTEGRITY %ldx slots=%lu source=%d processed=%ld scheduled=%ld "
            "incomplete=0 rejected=0\n",
@@ -133,6 +141,9 @@ int main(void) {
             TestOutputFrameCount(1, 1);
             TestOutputFrameCount(2, 2);
             TestOutputFrameCount(2, 3);
+            TestOutputFrameCount(1, 1, true);
+            TestOutputFrameCount(2, 2, true);
+            TestOutputFrameCount(2, 2, true, MCInterpolationBackendLinearBlend);
         } else {
             puts("Output test requires macOS 26 or later");
             return 2;

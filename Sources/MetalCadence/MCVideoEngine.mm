@@ -7,6 +7,7 @@
 #import <IOKit/IOKitLib.h>
 #import <math.h>
 #include "internal/MCTexturePool.hpp"
+#include "internal/MCFixedTimingWindow.hpp"
 #include <memory>
 #include <bitset>
 #if defined(__aarch64__)
@@ -262,6 +263,9 @@ static MCPipelineBundle *MCProductionPipelines(id<MTLDevice> device,
 @interface MCVideoEngine () {
     std::shared_ptr<metalcadence::TextureBudget> _textureBudget;
     std::bitset<4> _availableGPUSlots;
+    metalcadence::FixedTimingWindow<> _hashSamples, _fgSamples, _pairSamples, _scaleSamples,
+        _arrivalSamples, _normalizationSamples;
+    metalcadence::FixedTimingWindow<120> _readySamples;
 }
 @property (nonatomic, readwrite, copy) MCVideoConfiguration *configuration;
 @property (atomic, readwrite) BOOL running;
@@ -274,12 +278,11 @@ static MCPipelineBundle *MCProductionPipelines(id<MTLDevice> device,
 @property double pipelineInitMs;
 @property BOOL pipelineCacheHit, precompiledShaderLibrary;
 @property id<MTLFXSpatialScaler> scaler;
-@property id<MTLTexture> scratch;
-@property NSArray *scalers, *scratches;
+@property NSArray *scalers;
+@property BOOL nativeResolution;
 
 @property dispatch_group_t gpuGroup;
 @property (atomic) NSInteger batchesInFlight, peakBatches;
-@property NSMutableArray *readySamples, *hashSamples;
 @property MCInputFrame *lastUnique;
 @property double refreshPeriod, deadlineSafety, readyPrediction;
 @property double scaleGPUSum, scaleGPUIdleSum, previousScaleGPUEnd;
@@ -310,8 +313,6 @@ static MCPipelineBundle *MCProductionPipelines(id<MTLDevice> device,
 @property (atomic) long received, duplicates, ingressDrops, invalid, processed, interpolationErrors,
     gpuErrors, submitted, audioSubmitted, audioRendered, audioDropped, duplicateHashCollisions,
     fullRangeNormalized;
-@property NSMutableArray *fgSamples, *pairSamples, *scaleSamples, *arrivalSamples,
-    *normalizationSamples;
 @property AVAudioEngine *audioEngine;
 @property AVAudioPlayerNode *player;
 @property double startTime;
@@ -393,9 +394,13 @@ static MCPipelineBundle *MCProductionPipelines(id<MTLDevice> device,
                                                        mipmapped:NO];
     in.storageMode = MTLStorageModePrivate;
 
+    _nativeResolution = c.inputWidth == c.outputWidth && c.inputHeight == c.outputHeight;
     NSMutableArray<id<MTLFXSpatialScaler>> *scalers = [NSMutableArray new];
-    NSMutableArray<id<MTLTexture>> *scratches = [NSMutableArray new];
+    in.usage = MTLTextureUsageShaderWrite | MTLTextureUsageShaderRead;
     for (NSUInteger slot = 0; slot < c.maxConcurrentGPUBatches; ++slot) {
+        _availableGPUSlots.set(slot);
+        if (_nativeResolution)
+            continue;
         id<MTLFXSpatialScaler> scaler = [sd newSpatialScalerWithDevice:_device];
         if (!scaler) {
             if (error)
@@ -403,23 +408,11 @@ static MCPipelineBundle *MCProductionPipelines(id<MTLDevice> device,
             return nil;
         }
 
-        in.usage =
-            MTLTextureUsageShaderWrite | MTLTextureUsageShaderRead | scaler.colorTextureUsage;
-        id<MTLTexture> scratch = [_device newTextureWithDescriptor:in];
-        if (!scratch) {
-            if (error)
-                *error = MCError(@"MetalFX scratch slot unavailable");
-            return nil;
-        }
-
+        in.usage |= scaler.colorTextureUsage;
         [scalers addObject:scaler];
-        [scratches addObject:scratch];
-        _availableGPUSlots.set(slot);
     }
     _scalers = [scalers copy];
-    _scratches = [scratches copy];
-    _scaler = _scalers[0];
-    _scratch = _scratches[0];
+    _scaler = _scalers.firstObject;
     _gpuGroup = dispatch_group_create();
     MTLTextureDescriptor *out =
         [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
@@ -427,7 +420,9 @@ static MCPipelineBundle *MCProductionPipelines(id<MTLDevice> device,
                                                           height:c.outputHeight
                                                        mipmapped:NO];
     out.storageMode = MTLStorageModePrivate;
-    out.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite | _scaler.outputTextureUsage;
+    out.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
+    if (!_nativeResolution)
+        out.usage |= _scaler.outputTextureUsage;
     _textureBudget = std::make_shared<metalcadence::TextureBudget>(
         static_cast<std::size_t>(c.gpuTextureBudgetMiB) * 1024 * 1024);
     _pool = [[MCTexturePool alloc] initWithDevice:_device
@@ -435,11 +430,13 @@ static MCPipelineBundle *MCProductionPipelines(id<MTLDevice> device,
                                            budget:_textureBudget
                                     cacheCapacity:c.maxCachedTexturesPerPool
                                       preallocate:c.preallocatedTexturesPerPool];
-    _nativePool = [[MCTexturePool alloc] initWithDevice:_device
-                                             descriptor:in
-                                                 budget:_textureBudget
-                                          cacheCapacity:c.maxCachedTexturesPerPool
-                                            preallocate:c.preallocatedTexturesPerPool];
+    // Equal-size output aliases the native texture; only the output pool owns its lease.
+    if (!_nativeResolution)
+        _nativePool = [[MCTexturePool alloc] initWithDevice:_device
+                                                 descriptor:in
+                                                     budget:_textureBudget
+                                              cacheCapacity:c.maxCachedTexturesPerPool
+                                                preallocate:c.preallocatedTexturesPerPool];
     if (CVMetalTextureCacheCreate(NULL, NULL, _device, NULL, &_cache) != kCVReturnSuccess) {
         if (error)
             *error = MCError(@"Metal texture cache unavailable");
@@ -472,13 +469,6 @@ static MCPipelineBundle *MCProductionPipelines(id<MTLDevice> device,
     _audioQueue = dispatch_queue_create("metalcadence.sdk.audio",
                                         dispatch_queue_attr_make_with_qos_class(
                                             DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INTERACTIVE, 0));
-    _fgSamples = [NSMutableArray new];
-    _pairSamples = [NSMutableArray new];
-    _scaleSamples = [NSMutableArray new];
-    _arrivalSamples = [NSMutableArray new];
-    _normalizationSamples = [NSMutableArray new];
-    _readySamples = [NSMutableArray new];
-    _hashSamples = [NSMutableArray new];
     __weak MCVideoEngine *weak = self;
     _scheduler = [[MCDisplayScheduler alloc]
         initWithLayer:layer
@@ -796,7 +786,11 @@ static void MCInitializeColorRangeLUT(void) {
 - (CVPixelBufferRef)normalizeFullRange:(CVPixelBufferRef)input {
     MCInitializeColorRangeLUT();
     CVPixelBufferRef output = NULL;
-    NSDictionary *limit = @{(id)kCVPixelBufferPoolAllocationThresholdKey : @12};
+    static NSDictionary *limit;
+    static dispatch_once_t limitOnce;
+    dispatch_once(&limitOnce, ^{
+        limit = @{(id)kCVPixelBufferPoolAllocationThresholdKey : @12};
+    });
     if (CVPixelBufferPoolCreatePixelBufferWithAuxAttributes(
             NULL, _inputNormalizePool, (__bridge CFDictionaryRef)limit, &output) !=
         kCVReturnSuccess)
@@ -860,15 +854,11 @@ static void MCInitializeColorRangeLUT(void) {
     if (confirmed) {
         self.duplicates++;
         [_statisticsLock lock];
-        [_hashSamples addObject:@((CACurrentMediaTime() - hashStart) * 1000)];
-        if (_hashSamples.count > 600)
-            [_hashSamples removeObjectAtIndex:0];
+        _hashSamples.record((CACurrentMediaTime() - hashStart) * 1000);
         [_statisticsLock unlock];
         [_lock unlock];
         return YES;
     }
-    _hasHash = YES;
-    _lastHash = hash;
     MCInputFrame *f = [MCInputFrame new];
     f.original = CVPixelBufferRetain(b);
     if (CVPixelBufferGetPixelFormatType(b) == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange) {
@@ -881,19 +871,17 @@ static void MCInitializeColorRangeLUT(void) {
         }
         self.fullRangeNormalized++;
         [_statisticsLock lock];
-        [_normalizationSamples addObject:@((CACurrentMediaTime() - started) * 1000)];
-        if (_normalizationSamples.count > 600)
-            [_normalizationSamples removeObjectAtIndex:0];
+        _normalizationSamples.record((CACurrentMediaTime() - started) * 1000);
         [_statisticsLock unlock];
     } else
         f.buffer = CVPixelBufferRetain(b);
     f.pts = pts;
     f.arrival = hashStart;
+    _hasHash = YES;
+    _lastHash = hash;
     _lastUnique = f;
     [_statisticsLock lock];
-    [_hashSamples addObject:@((CACurrentMediaTime() - hashStart) * 1000)];
-    if (_hashSamples.count > 600)
-        [_hashSamples removeObjectAtIndex:0];
+    _hashSamples.record((CACurrentMediaTime() - hashStart) * 1000);
     [_statisticsLock unlock];
     if (_pendingFrames.count >= 4) {
         [_pendingFrames removeObjectAtIndex:0];
@@ -959,7 +947,8 @@ static void MCInitializeColorRangeLUT(void) {
             CFRelease(uv);
         return nil;
     }
-    id<MTLTexture> out = [_pool take], raw = [_nativePool take];
+    id<MTLTexture> out = [_pool take];
+    id<MTLTexture> raw = _nativeResolution ? out : [_nativePool take];
     if (!out || !raw) {
         [_pool put:out];
         [_nativePool put:raw];
@@ -990,6 +979,8 @@ static void MCInitializeColorRangeLUT(void) {
     [enc dispatchThreads:MTLSizeMake(c.inputWidth, c.inputHeight, 1)
         threadsPerThreadgroup:MTLSizeMake(16, 8, 1)];
     [enc endEncoding];
+    if (_nativeResolution)
+        return out;
     _scaler.colorTexture = raw;
     _scaler.outputTexture = out;
     _scaler.inputContentWidth = c.inputWidth;
@@ -1038,8 +1029,17 @@ static void MCInitializeColorRangeLUT(void) {
     [_lock unlock];
     if (slot == NSNotFound)
         return;
-    _scaler = _scalers[slot];
-    _scratch = _scratches[slot];
+    id<MTLCommandBuffer> cb = [_gpu commandBuffer];
+    if (!cb) {
+        self.gpuErrors++;
+        [_lock lock];
+        _availableGPUSlots.set(slot);
+        self.batchesInFlight--;
+        [_lock unlock];
+        return;
+    }
+    if (!_nativeResolution)
+        _scaler = _scalers[slot];
     BOOL useBlend =
         _configuration.interpolationBackend == MCInterpolationBackendLinearBlend && mult > 1;
     NSMutableArray *dest = [NSMutableArray new], *frames = [NSMutableArray new],
@@ -1100,7 +1100,6 @@ static void MCInitializeColorRangeLUT(void) {
               vtError);
         self.interpolationErrors++;
     }
-    id<MTLCommandBuffer> cb = [_gpu commandBuffer];
     NSMutableArray *refs = [NSMutableArray new], *textures = [NSMutableArray new],
                    *native = [NSMutableArray new];
     id<MTLTexture> first = [self scale:a.buffer cb:cb refs:refs native:native];
@@ -1108,15 +1107,17 @@ static void MCInitializeColorRangeLUT(void) {
         [textures addObject:first];
     } else {
         self.scaleFailures++;
+        ok = NO;
     }
     NSMutableArray *temporaryScaled = [NSMutableArray new], *temporaryNative = [NSMutableArray new];
-    if (useBlend && ok) {
+    if (useBlend && ok && first && native.count) {
         id<MTLTexture> next = [self scale:b.buffer cb:cb refs:refs native:temporaryNative];
         if (next && temporaryNative.count) {
             [temporaryScaled addObject:next];
             for (int i = 1; i < mult; i++) {
                 float phase = (float)i / mult;
-                id<MTLTexture> out = [self.pool take], raw = [self.nativePool take];
+                id<MTLTexture> out = [self.pool take];
+                id<MTLTexture> raw = self.nativeResolution ? out : [self.nativePool take];
                 if (!out || !raw) {
                     [self.pool put:out];
                     [self.nativePool put:raw];
@@ -1124,11 +1125,12 @@ static void MCInitializeColorRangeLUT(void) {
                     break;
                 }
                 [self encodeBlendFrom:first to:next output:out phase:phase command:cb];
-                [self encodeBlendFrom:native[0]
-                                   to:temporaryNative[0]
-                               output:raw
-                                phase:phase
-                              command:cb];
+                if (!self.nativeResolution)
+                    [self encodeBlendFrom:native[0]
+                                       to:temporaryNative[0]
+                                   output:raw
+                                    phase:phase
+                                  command:cb];
                 [textures addObject:out];
                 [native addObject:raw];
             }
@@ -1199,29 +1201,22 @@ static void MCInitializeColorRangeLUT(void) {
                     if (self.running) {
                         double readyAge = MAX(0, end - a.pts);
                         [self.statisticsLock lock];
-                        [self.readySamples addObject:@(readyAge)];
-                        if (self.readySamples.count > 120)
-                            [self.readySamples removeObjectAtIndex:0];
+                        self->_readySamples.record(readyAge);
                         [self.statisticsLock unlock];
                         if (self.latencyController) {
-                            NSDictionary *pressure = [self.scheduler pressureSnapshot];
+                            MCSchedulerPressure pressure = [self.scheduler pressureCounters];
                             double phaseTime = mult > 1 ? delta / mult : delta;
-                            double delay = [self.latencyController
-                                observeReadyAge:readyAge
-                                  refreshPeriod:self.refreshPeriod
-                                 outputInterval:phaseTime
-                                   queuedFrames:[pressure[@"queued"] unsignedIntegerValue]
-                                totalSuperseded:[pressure[@"reactiveSuperseded"]
-                                                    unsignedLongLongValue]
-                                  totalOverflow:[pressure[@"overflow"] unsignedLongLongValue]];
+                            double delay =
+                                [self.latencyController observeReadyAge:readyAge
+                                                          refreshPeriod:self.refreshPeriod
+                                                         outputInterval:phaseTime
+                                                           queuedFrames:pressure.overdue
+                                                        totalSuperseded:pressure.reactiveSuperseded
+                                                          totalOverflow:pressure.overflow];
                             self.currentPlayoutDelay = delay;
-                            NSDictionary *estimate = [self.latencyController metrics];
-                            self.readyPrediction =
-                                [estimate[@"latencySelectedReadyMs"] doubleValue] / 1000.;
-                            self.deadlineSafety =
-                                ([estimate[@"latencyBaseSafetyMs"] doubleValue] +
-                                 [estimate[@"latencyPressureSafetyMs"] doubleValue]) /
-                                1000.;
+                            MCLatencyEstimate estimate = [self.latencyController estimate];
+                            self.readyPrediction = estimate.readyPrediction;
+                            self.deadlineSafety = estimate.deadlineSafety;
                         }
                         double pts = a.pts + self.currentPlayoutDelay;
                         MCOutputBatch *batch = [MCOutputBatch new];
@@ -1247,10 +1242,10 @@ static void MCInitializeColorRangeLUT(void) {
                         }
                         self.processed++;
                         [self.statisticsLock lock];
-                        [self.fgSamples addObject:@((fgEnd - start) * 1000)];
-                        [self.pairSamples addObject:@((end - start) * 1000)];
-                        [self.scaleSamples
-                            addObject:@((completed.GPUEndTime - completed.GPUStartTime) * 1000)];
+                        self->_fgSamples.record((fgEnd - start) * 1000);
+                        self->_pairSamples.record((end - start) * 1000);
+                        self->_scaleSamples.record((completed.GPUEndTime - completed.GPUStartTime) *
+                                                   1000);
                         if (completed.GPUStartTime > 0 &&
                             completed.GPUEndTime >= completed.GPUStartTime) {
                             self.scaleGPUSum += completed.GPUEndTime - completed.GPUStartTime;
@@ -1259,15 +1254,7 @@ static void MCInitializeColorRangeLUT(void) {
                                     MAX(0, completed.GPUStartTime - self.previousScaleGPUEnd);
                             self.previousScaleGPUEnd = completed.GPUEndTime;
                         }
-                        [self.arrivalSamples addObject:@((b.arrival - b.pts) * 1000)];
-                        for (NSMutableArray *x in @[
-                                 self.fgSamples,
-                                 self.pairSamples,
-                                 self.scaleSamples,
-                                 self.arrivalSamples
-                             ])
-                            if (x.count > 600)
-                                [x removeObjectAtIndex:0];
+                        self->_arrivalSamples.record((b.arrival - b.pts) * 1000);
                         [self.statisticsLock unlock];
                     } else {
                         for (id t in textures)
@@ -1371,29 +1358,34 @@ static void MCInitializeColorRangeLUT(void) {
     });
     return YES;
 }
-- (double)p:(NSArray *)x q:(double)q {
-    NSArray *a = [x sortedArrayUsingSelector:@selector(compare:)];
-    return a.count ? [a[(NSUInteger)floor((a.count - 1) * q)] doubleValue] : 0;
-}
 - (NSDictionary *)metrics {
     NSMutableDictionary *m = [[_scheduler metrics] mutableCopy];
     [_statisticsLock lock];
-    m[@"interpolationMedianMs"] = @([self p:_fgSamples q:.5]);
-    m[@"processingP50Ms"] = @([self p:_pairSamples q:.5]);
-    m[@"duplicateP95Ms"] = @([self p:_hashSamples q:.95]);
-    m[@"fullRangeNormalizationP95Ms"] = @([self p:_normalizationSamples q:.95]);
-    m[@"normalizedFullRange"] = @(self.fullRangeNormalized);
-    m[@"readyAgeP95Ms"] = @([self p:_readySamples q:.95] * 1000);
-    m[@"processingP95Ms"] = @([self p:_pairSamples q:.95]);
-    m[@"processingP99Ms"] = @([self p:_pairSamples q:.99]);
-    m[@"scaleGPUMedianMs"] = @([self p:_scaleSamples q:.5]);
-    m[@"scaleGPUExecutionSeconds"] = @(self.scaleGPUSum);
-    m[@"scaleGPUQueueGapSeconds"] = @(self.scaleGPUIdleSum);
-    double seconds = MAX(.001, CACurrentMediaTime() - self.startTime);
-    m[@"gpuCommandWorkPercent"] = @(MIN(100., MAX(0., self.scaleGPUSum / seconds * 100.)));
-    m[@"gpuWorkMillisecondsPerSecond"] = @(MAX(0., self.scaleGPUSum / seconds * 1000.));
-    m[@"ingressP95Ms"] = @([self p:_arrivalSamples q:.95]);
+    const auto fgSamples = _fgSamples;
+    const auto pairSamples = _pairSamples;
+    const auto hashSamples = _hashSamples;
+    const auto normalizationSamples = _normalizationSamples;
+    const auto readySamples = _readySamples;
+    const auto scaleSamples = _scaleSamples;
+    const auto arrivalSamples = _arrivalSamples;
+    const double scaleGPUSum = self.scaleGPUSum, scaleGPUIdleSum = self.scaleGPUIdleSum;
     [_statisticsLock unlock];
+    m[@"interpolationMedianMs"] = @(fgSamples.percentile(.5));
+    m[@"processingP50Ms"] = @(pairSamples.percentile(.5));
+    m[@"duplicateP95Ms"] = @(hashSamples.percentile(.95));
+    m[@"fullRangeNormalizationP95Ms"] = @(normalizationSamples.percentile(.95));
+    m[@"normalizedFullRange"] = @(self.fullRangeNormalized);
+    m[@"readyAgeP95Ms"] = @(readySamples.percentile(.95) * 1000);
+    m[@"processingP95Ms"] = @(pairSamples.percentile(.95));
+    m[@"processingP99Ms"] = @(pairSamples.percentile(.99));
+    m[@"scaleGPUMedianMs"] = @(scaleSamples.percentile(.5));
+    m[@"scaleGPUExecutionSeconds"] = @(scaleGPUSum);
+    m[@"scaleGPUQueueGapSeconds"] = @(scaleGPUIdleSum);
+    double seconds = MAX(.001, CACurrentMediaTime() - self.startTime);
+    m[@"gpuCommandWorkPercent"] = @(MIN(100., MAX(0., scaleGPUSum / seconds * 100.)));
+    m[@"gpuWorkMillisecondsPerSecond"] = @(MAX(0., scaleGPUSum / seconds * 1000.));
+    m[@"ingressP95Ms"] = @(arrivalSamples.percentile(.95));
+
     if (_configuration.profile) {
         m[@"profileKind"] = @(_configuration.profile.kind);
         m[@"framePolicy"] = @(_configuration.profile.policy);
@@ -1446,6 +1438,7 @@ static void MCInitializeColorRangeLUT(void) {
     m[@"precompiledShaderLibrary"] = @(self.precompiledShaderLibrary);
     m[@"textureAllocations"] = @(_pool.allocations);
     m[@"textureReuses"] = @(_pool.reuses);
+    m[@"nativeResolutionBypass"] = @(_nativeResolution);
     m[@"nativeTextureAllocations"] = @(_nativePool.allocations);
     m[@"nativeTextureReuses"] = @(_nativePool.reuses);
     m[@"textureEvictions"] = @(_pool.evictions);

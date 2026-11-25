@@ -1,6 +1,11 @@
 #import <Foundation/Foundation.h>
 #import "MCWorkloadProfile.h"
 NS_ASSUME_NONNULL_BEGIN
+typedef struct {
+    double readyPrediction;
+    double deadlineSafety;
+} MCLatencyEstimate;
+
 /// Adaptive software playout controller for timestamped interactive video.
 /// All input times are durations in seconds; never controller-to-photon measurements.
 /// Its state is bounded and safe to inspect concurrently from a telemetry thread.
@@ -12,6 +17,7 @@ NS_ASSUME_NONNULL_BEGIN
                               policy:(MCFramePolicy)policy;
 /// Call once after the GPU has completed one source-frame batch. All cumulative
 /// counters must be monotonically increasing during one controller session.
+/// queuedFrames is the caller-provided pressure depth; the engine supplies overdue frames only.
 - (double)observeReadyAge:(double)readyAge
             refreshPeriod:(double)refreshPeriod
            outputInterval:(double)outputInterval
@@ -27,6 +33,8 @@ NS_ASSUME_NONNULL_BEGIN
 /// scheduling reserve more headroom until the stream remains stable.
 - (void)recordAudioDeadlineMiss;
 
+/// Allocation-free estimate in seconds, for use on the completion queue.
+- (MCLatencyEstimate)estimate;
 /// Immediate read-only telemetry; no full pipeline synchronization required.
 - (NSDictionary<NSString *, NSNumber *> *)metrics;
 @end

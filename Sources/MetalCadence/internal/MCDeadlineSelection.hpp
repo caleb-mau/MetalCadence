@@ -24,27 +24,29 @@ struct DueDecision {
 // a refresh-relative lateness tolerance. Interactive mode presents the
 // freshest eligible frame to avoid displaying stale backlogged input.
 // Both modes return -1 if no frame is ready for the upcoming deadline.
-inline DueDecision selectDue(const double *pts,
-                             std::size_t count,
-                             double displayDeadline,
-                             double lateTolerance,
-                             DeadlineMode mode) {
-    if (!pts || count == 0 || !std::isfinite(displayDeadline)) {
+template <typename TimestampAt>
+inline DueDecision selectDueBy(TimestampAt timestampAt,
+                               std::size_t count,
+                               double displayDeadline,
+                               double lateTolerance,
+                               DeadlineMode mode) {
+    if (count == 0 || !std::isfinite(displayDeadline)) {
         return {};
     }
 
     std::ptrdiff_t lastDue = -1;
     std::ptrdiff_t earliestOnTime = -1;
     for (std::size_t i = 0; i < count; ++i) {
-        if (!std::isfinite(pts[i])) {
+        const double pts = timestampAt(i);
+        if (!std::isfinite(pts)) {
             continue;
         }
-        if (pts[i] > displayDeadline + .001) {
+        if (pts > displayDeadline + .001) {
             break;
         }
 
         lastDue = static_cast<std::ptrdiff_t>(i);
-        if (earliestOnTime < 0 && displayDeadline - pts[i] <= lateTolerance) {
+        if (earliestOnTime < 0 && displayDeadline - pts <= lateTolerance) {
             earliestOnTime = lastDue;
         }
     }
@@ -62,6 +64,34 @@ inline DueDecision selectDue(const double *pts,
 
     const std::ptrdiff_t chosen = earliestOnTime >= 0 ? earliestOnTime : lastDue;
     return {chosen, static_cast<std::size_t>(chosen)};
+}
+
+inline DueDecision selectDue(const double *pts,
+                             std::size_t count,
+                             double displayDeadline,
+                             double lateTolerance,
+                             DeadlineMode mode) {
+    if (!pts)
+        return {};
+    return selectDueBy(
+        [pts](std::size_t i) {
+            return pts[i];
+        },
+        count,
+        displayDeadline,
+        lateTolerance,
+        mode);
+}
+
+// The scheduler queue contains sorted finite presentation timestamps.
+template <typename TimestampAt>
+inline std::size_t overdueCount(TimestampAt timestampAt, std::size_t count, double now) {
+    if (!std::isfinite(now))
+        return 0;
+    std::size_t overdue = 0;
+    while (overdue < count && timestampAt(overdue) <= now)
+        ++overdue;
+    return overdue;
 }
 
 } // namespace metalcadence
