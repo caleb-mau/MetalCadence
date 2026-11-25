@@ -63,7 +63,7 @@
     }
     CVPixelBufferLockBaseAddress(p, kCVPixelBufferLock_ReadOnly);
     for (int plane = 0; plane < 2; plane++) {
-        const uint8_t *src = CVPixelBufferGetBaseAddressOfPlane(p, plane);
+        const uint8_t *src = (const uint8_t *)CVPixelBufferGetBaseAddressOfPlane(p, plane);
         size_t stride = CVPixelBufferGetBytesPerRowOfPlane(p, plane);
         uint8_t *dst = bytes + (plane ? VC_W * VC_H : 0);
         for (int y = 0; y < (plane ? VC_H / 2 : VC_H); y++)
@@ -106,7 +106,8 @@ int main(int argc, const char **argv) {
         int fd = open(path.fileSystemRepresentation, O_RDWR | O_CREAT | O_TRUNC, 0600);
         if (fd < 0 || ftruncate(fd, sizeof(VCRing)))
             return 2;
-        VCRing *ring = mmap(NULL, sizeof(VCRing), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+        VCRing *ring =
+            (VCRing *)mmap(NULL, sizeof(VCRing), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
         if (ring == MAP_FAILED)
             return 3;
         memset(ring, 0, sizeof(*ring));
@@ -133,8 +134,15 @@ int main(int argc, const char **argv) {
         }
         id<MTLDevice> dev = stress ? MTLCreateSystemDefaultDevice() : nil;
         NSError *err = nil;
-        id<MTLLibrary> lib =
-            stress ? [dev newLibraryWithSource:shader options:nil error:&err] : nil;
+        id<MTLLibrary> lib = nil;
+        if (stress) {
+            NSURL *compiled = [[NSBundle mainBundle] URLForResource:@"MetalCadenceDiagnostics"
+                                                      withExtension:@"metallib"];
+            if (compiled)
+                lib = [dev newLibraryWithURL:compiled error:&err];
+            if (!lib)
+                lib = [dev newLibraryWithSource:MCDiagnosticShaderSource() options:nil error:&err];
+        }
         if (stress && !lib) {
             NSLog(@"shader %@", err);
             return 4;
@@ -165,11 +173,11 @@ int main(int argc, const char **argv) {
                 : [NSData dataWithContentsOfFile:[base stringByAppendingPathComponent:@"replay.f32"]
                                          options:NSDataReadingMappedIfSafe
                                            error:nil];
-        const float *samples = sound.bytes;
+        const float *samples = (const float *)sound.bytes;
         size_t sampleFrames = sound.length / (sizeof(float) * 2);
         NSLog(@"Replay soundtrack: %zu stereo samples (missing soundtrack produces silence)",
               sampleFrames);
-        unsigned char *frame = malloc(VC_BYTES);
+        unsigned char *frame = (unsigned char *)malloc(VC_BYTES);
         mach_timebase_info_data_t tb;
         mach_timebase_info(&tb);
         double ticks = 1e9 * tb.denom / tb.numer;

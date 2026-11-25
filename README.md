@@ -167,3 +167,56 @@ Objective-C/C source is formatted consistently with the repository-wide
 `./scripts/format.sh --check` before committing. SDK and demo builds run the
 check automatically; pull requests have an independent formatting job. Removing
 whitespace does not improve runtime performance.
+
+## Objective-C++20 internals and GPU resource tuning
+
+MetalCadence's implementation uses **Objective-C++20** (`.mm`) to combine
+Foundation, CoreVideo, VideoToolbox, Metal and MetalFX with C++20 resource
+management. The public headers remain regular Objective-C, so existing Swift
+and Objective-C consumers retain the same API. `Package.swift` declares
+`cxxLanguageStandard: .cxx20`; source and test builds use `clang++ -std=c++20`.
+This is an architectural change, not a claim that C++ automatically generates
+frames more quickly.
+
+The output/native texture caches share one accounted GPU memory budget and
+track active versus cached resources. For a consumer that needs custom limits:
+
+```objc
+MCVideoConfiguration *configuration = [MCVideoConfiguration new];
+configuration.gpuTextureBudgetMiB = 512;
+configuration.maxCachedTexturesPerPool = 12;
+configuration.preallocatedTexturesPerPool = 0; // Lazy is the measured default.
+configuration.maxConcurrentGPUBatches = 2;   // Separate scaler and scratch per slot.
+```
+
+`gpuTextureBudgetMiB` only covers the SDK's two pooled private texture
+classes, not all memory held by MetalFX, VideoToolbox, system drawables or the
+GPU driver. More preallocated textures or in-flight batches are not
+automatically faster, and both consume unified memory.
+
+The production rendering and NV12 conversion shaders live in
+`Shaders/Production.metal`; independent diagnostic shaders live in
+`Diagnostic.metal` and `LegacyDemo.metal`. Normal app builds compile
+`.metallib` files ahead of time. The Swift Package retains deterministic
+generated source fallbacks for applications that do not bundle a library.
+After editing any `.metal` file, run `./scripts/format.sh` to format source
+and regenerate matching fallback headers.
+
+```bash
+./scripts/format.sh --check
+./test-sdk.sh
+(cd Examples/SwiftConsumer && swift run Smoke)
+./build-sdk-demo.sh
+./Audit/run-shader-color.sh
+./Audit/run-metal-heaps.sh
+./Audit/run-cpp20-pools.sh 16 20261125
+./Audit/run-cpp20-cadence.sh 15 20261125
+python3 Audit/export-cpp20.py
+```
+
+**Evidence and limitations:** [Objective-C++20 engineering audit](Audit/cpp20-engineering-report.md)
+and [machine-readable benchmarks](Audit/verified-cpp20-results.json).
+The same-refresh baseline shows similar fresh FPS and processing latency,
+a lower observed process footprint and fewer output allocations, but worse
+presentation-gap P99. Software presentation timestamps are not
+controller-to-photon latency. The SDK remains experimental.

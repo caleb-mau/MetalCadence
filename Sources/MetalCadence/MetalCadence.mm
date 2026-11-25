@@ -256,9 +256,11 @@ NSInteger MCSelectDueFrame(const double *pts, NSUInteger count, double target, d
     os_unfair_lock_unlock(&_lock);
     NSMutableDictionary *m = [base mutableCopy];
     NSArray *sorted = [g sortedArrayUsingSelector:@selector(compare:)];
+    m[@"gapP50Ms"] = sorted.count ? sorted[(NSUInteger)floor((sorted.count - 1) * .50)] : @0;
     m[@"gapP95Ms"] = sorted.count ? sorted[(NSUInteger)floor((sorted.count - 1) * .95)] : @0;
     m[@"gapP99Ms"] = sorted.count ? sorted[(NSUInteger)floor((sorted.count - 1) * .99)] : @0;
     NSArray *l = [latencies sortedArrayUsingSelector:@selector(compare:)];
+    m[@"sourceToPresentP50Ms"] = l.count ? l[(NSUInteger)floor((l.count - 1) * .50)] : @0;
     m[@"sourceToPresentP95Ms"] = l.count ? l[(NSUInteger)floor((l.count - 1) * .95)] : @0;
     m[@"sourceToPresentP99Ms"] = l.count ? l[(NSUInteger)floor((l.count - 1) * .99)] : @0;
     return m;

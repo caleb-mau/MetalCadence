@@ -23,6 +23,14 @@ API_AVAILABLE(macos(26.0))
 @interface MCVideoConfiguration : NSObject <NSCopying>
 @property NSInteger inputWidth, inputHeight, outputWidth, outputHeight;
 @property NSInteger multiplier; // 1, 2 or 4
+/// Output/intermediate GPU pool budget in MiB; MetalFX/VT allocations excluded.
+@property NSUInteger gpuTextureBudgetMiB;
+/// Number of currently unused textures retained by each of the two output pools.
+@property NSUInteger maxCachedTexturesPerPool;
+/// How many textures to allocate once at startup in each pool. Zero is lazy.
+@property NSUInteger preallocatedTexturesPerPool;
+/// 1–4 independent MetalFX scratch/scaler slots. Default 2.
+@property NSUInteger maxConcurrentGPUBatches;
 @property MCInterpolationBackend interpolationBackend;
 @property BOOL adaptiveMultiplier; // Optional 4x -> 2x fallback when a batch cannot meet deadline.
 @property MCDuplicateFingerprintMethod duplicateFingerprintMethod;

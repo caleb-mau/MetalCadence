@@ -23,7 +23,7 @@ static CVPixelBufferRef create(void) {
 static void fill(CVPixelBufferRef b, int seed) {
     CVPixelBufferLockBaseAddress(b, 0);
     for (int p = 0; p < 2; p++) {
-        uint8_t *data = CVPixelBufferGetBaseAddressOfPlane(b, p);
+        uint8_t *data = (uint8_t *)CVPixelBufferGetBaseAddressOfPlane(b, p);
         size_t stride = CVPixelBufferGetBytesPerRowOfPlane(b, p),
                width = CVPixelBufferGetWidthOfPlane(b, p) * (p ? 2 : 1),
                height = CVPixelBufferGetHeightOfPlane(b, p);
@@ -37,8 +37,8 @@ static void copy(CVPixelBufferRef a, CVPixelBufferRef b) {
     CVPixelBufferLockBaseAddress(a, kCVPixelBufferLock_ReadOnly);
     CVPixelBufferLockBaseAddress(b, 0);
     for (int p = 0; p < 2; p++) {
-        uint8_t *dst = CVPixelBufferGetBaseAddressOfPlane(b, p);
-        uint8_t *src = CVPixelBufferGetBaseAddressOfPlane(a, p);
+        uint8_t *dst = (uint8_t *)CVPixelBufferGetBaseAddressOfPlane(b, p);
+        uint8_t *src = (uint8_t *)CVPixelBufferGetBaseAddressOfPlane(a, p);
         size_t ds = CVPixelBufferGetBytesPerRowOfPlane(b, p),
                ss = CVPixelBufferGetBytesPerRowOfPlane(a, p),
                width = CVPixelBufferGetWidthOfPlane(b, p) * (p ? 2 : 1),
@@ -54,8 +54,8 @@ static BOOL equal(CVPixelBufferRef a, CVPixelBufferRef b) {
     CVPixelBufferLockBaseAddress(b, kCVPixelBufferLock_ReadOnly);
     BOOL eq = YES;
     for (int p = 0; p < 2 && eq; p++) {
-        uint8_t *aa = CVPixelBufferGetBaseAddressOfPlane(a, p),
-                *bb = CVPixelBufferGetBaseAddressOfPlane(b, p);
+        uint8_t *aa = (uint8_t *)CVPixelBufferGetBaseAddressOfPlane(a, p),
+                *bb = (uint8_t *)CVPixelBufferGetBaseAddressOfPlane(b, p);
         size_t as = CVPixelBufferGetBytesPerRowOfPlane(a, p),
                bs = CVPixelBufferGetBytesPerRowOfPlane(b, p),
                width = CVPixelBufferGetWidthOfPlane(a, p) * (p ? 2 : 1),
@@ -74,7 +74,7 @@ static uint64_t fnv(CVPixelBufferRef b) {
     uint64_t h = 1469598103934665603ull;
     CVPixelBufferLockBaseAddress(b, kCVPixelBufferLock_ReadOnly);
     for (int p = 0; p < 2; p++) {
-        uint8_t *base = CVPixelBufferGetBaseAddressOfPlane(b, p);
+        uint8_t *base = (uint8_t *)CVPixelBufferGetBaseAddressOfPlane(b, p);
         size_t stride = CVPixelBufferGetBytesPerRowOfPlane(b, p),
                width = CVPixelBufferGetWidthOfPlane(b, p) * (p ? 2 : 1),
                height = CVPixelBufferGetHeightOfPlane(b, p);
@@ -91,7 +91,7 @@ static uint64_t neon(CVPixelBufferRef b) {
     uint8x16_t accum = vdupq_n_u8(0);
     CVPixelBufferLockBaseAddress(b, kCVPixelBufferLock_ReadOnly);
     for (int p = 0; p < 2; p++) {
-        uint8_t *base = CVPixelBufferGetBaseAddressOfPlane(b, p);
+        uint8_t *base = (uint8_t *)CVPixelBufferGetBaseAddressOfPlane(b, p);
         size_t stride = CVPixelBufferGetBytesPerRowOfPlane(b, p),
                width = CVPixelBufferGetWidthOfPlane(b, p) * (p ? 2 : 1),
                height = CVPixelBufferGetHeightOfPlane(b, p);
@@ -112,7 +112,7 @@ static uint64_t neon(CVPixelBufferRef b) {
     return h;
 }
 static double percentile(double *d, int n, double q) {
-    double *a = malloc(n * sizeof(double));
+    double *a = (double *)malloc(n * sizeof(double));
     memcpy(a, d, n * sizeof(double));
     for (int i = 0; i < n; i++)
         for (int j = i + 1; j < n; j++)
@@ -143,7 +143,7 @@ int main() {
         copy(a, delta);
         fill(different, 73);
         CVPixelBufferLockBaseAddress(delta, 0);
-        uint8_t *p = CVPixelBufferGetBaseAddressOfPlane(delta, 0);
+        uint8_t *p = (uint8_t *)CVPixelBufferGetBaseAddressOfPlane(delta, 0);
         size_t stride = CVPixelBufferGetBytesPerRowOfPlane(delta, 0);
         p[1 * stride + 1] ^= 3;
         CVPixelBufferUnlockBaseAddress(delta, 0);

@@ -169,7 +169,7 @@ int main() {
             assert([verifier startWithRefreshRate:60 error:&e]);
             CVPixelBufferRef same = sample(82), altered = sample(82);
             CVPixelBufferLockBaseAddress(altered, 0);
-            uint8_t *pixels = CVPixelBufferGetBaseAddressOfPlane(altered, 0);
+            uint8_t *pixels = (uint8_t *)CVPixelBufferGetBaseAddressOfPlane(altered, 0);
             pixels[CVPixelBufferGetBytesPerRowOfPlane(altered, 0) + 1] ^= 1;
             CVPixelBufferUnlockBaseAddress(altered, 0);
             double verifyBase = CACurrentMediaTime();

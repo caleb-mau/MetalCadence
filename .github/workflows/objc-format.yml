@@ -1,14 +1,14 @@
-name: Objective-C formatting
+name: Objective-C++ and Metal shader formatting
 on:
   push:
-    branches: ["main", "audit/**"]
+    branches: ["main", "audit/**", "feature/**"]
   pull_request:
 jobs:
   clang-format:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Verify all Objective-C and C source formatting
+      - name: Verify Objective-C++, C++20, generated shaders and Metal source
         run: ./scripts/format.sh --check
       - name: Verify whitespace integrity
         run: git diff --check

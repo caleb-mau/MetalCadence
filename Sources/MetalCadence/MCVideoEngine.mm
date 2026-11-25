@@ -6,6 +6,9 @@
 #import <sys/resource.h>
 #import <IOKit/IOKitLib.h>
 #import <math.h>
+#include "internal/MCTexturePool.hpp"
+#include <memory>
+#include <bitset>
 #if defined(__aarch64__)
 #import <arm_neon.h>
 #endif
@@ -22,6 +25,10 @@ static NSError *MCError(NSString *message) {
         _outputWidth = 2560;
         _outputHeight = 1440;
         _multiplier = 2;
+        _gpuTextureBudgetMiB = 512;
+        _maxCachedTexturesPerPool = 12;
+        _preallocatedTexturesPerPool = 0;
+        _maxConcurrentGPUBatches = 2;
         _interpolationBackend = MCInterpolationBackendVideoToolbox;
         _adaptiveMultiplier = NO;
         _duplicateFingerprintMethod = MCDuplicateFingerprintNEON;
@@ -42,6 +49,10 @@ static NSError *MCError(NSString *message) {
     c.outputWidth = _outputWidth;
     c.outputHeight = _outputHeight;
     c.multiplier = _multiplier;
+    c.gpuTextureBudgetMiB = _gpuTextureBudgetMiB;
+    c.maxCachedTexturesPerPool = _maxCachedTexturesPerPool;
+    c.preallocatedTexturesPerPool = _preallocatedTexturesPerPool;
+    c.maxConcurrentGPUBatches = _maxConcurrentGPUBatches;
     c.interpolationBackend = _interpolationBackend;
     c.adaptiveMultiplier = _adaptiveMultiplier;
     c.duplicateFingerprintMethod = _duplicateFingerprintMethod;
@@ -80,39 +91,63 @@ static NSError *MCError(NSString *message) {
         CVPixelBufferRelease(_original);
 }
 @end
-@interface MCTexturePool : NSObject
-@property NSLock *lock;
-@property NSMutableArray *free;
-@property id<MTLDevice> device;
-@property MTLTextureDescriptor *descriptor;
-@property (atomic) long allocations, reuses;
+@interface MCTexturePool : NSObject {
+    std::unique_ptr<metalcadence::TexturePool> _storage;
+}
+- (instancetype)initWithDevice:(id<MTLDevice>)device
+                    descriptor:(MTLTextureDescriptor *)descriptor
+                        budget:(std::shared_ptr<metalcadence::TextureBudget>)budget
+                 cacheCapacity:(NSUInteger)cacheCapacity
+                   preallocate:(NSUInteger)preallocate;
+@property (nonatomic, readonly) long allocations;
+@property (nonatomic, readonly) long reuses;
+@property (nonatomic, readonly) long evictions;
+@property (nonatomic, readonly) long denied;
+@property (nonatomic, readonly) NSUInteger cachedCount;
+@property (nonatomic, readonly) NSUInteger bytesPerTexture;
 - (id<MTLTexture>)take;
 - (void)put:(id<MTLTexture>)texture;
 @end
+
 @implementation MCTexturePool
-- (id<MTLTexture>)take {
-    [self.lock lock];
-    id<MTLTexture> t = self.free.lastObject;
-    if (t) {
-        [self.free removeLastObject];
-        self.reuses++;
+- (instancetype)initWithDevice:(id<MTLDevice>)device
+                    descriptor:(MTLTextureDescriptor *)descriptor
+                        budget:(std::shared_ptr<metalcadence::TextureBudget>)budget
+                 cacheCapacity:(NSUInteger)cacheCapacity
+                   preallocate:(NSUInteger)preallocate {
+    if ((self = [super init])) {
+        _storage = std::make_unique<metalcadence::TexturePool>(
+            device, descriptor, std::move(budget), cacheCapacity);
+        _storage->prewarm(preallocate);
     }
-    [self.lock unlock];
-    if (!t) {
-        t = [self.device newTextureWithDescriptor:self.descriptor];
-        self.allocations++;
-    }
-    return t;
+    return self;
 }
-- (void)put:(id<MTLTexture>)t {
-    if (!t)
-        return;
-    [self.lock lock];
-    if (self.free.count < 24)
-        [self.free addObject:t];
-    [self.lock unlock];
+- (id<MTLTexture>)take {
+    return _storage->acquire();
+}
+- (void)put:(id<MTLTexture>)texture {
+    _storage->release(texture);
+}
+- (long)allocations {
+    return static_cast<long>(_storage->allocations());
+}
+- (long)reuses {
+    return static_cast<long>(_storage->reuses());
+}
+- (long)evictions {
+    return static_cast<long>(_storage->evictions());
+}
+- (long)denied {
+    return static_cast<long>(_storage->denied());
+}
+- (NSUInteger)cachedCount {
+    return _storage->cachedCount();
+}
+- (NSUInteger)bytesPerTexture {
+    return _storage->byteCost();
 }
 @end
+
 @interface MCOutputBatch : NSObject
 @property NSArray<id<MTLTexture>> *textures;
 @property MCTexturePool *pool, *nativePool;
@@ -126,36 +161,97 @@ static NSError *MCError(NSString *message) {
         [_nativePool put:t];
 }
 @end
-static NSString *const MCShader =
-    @"#include <metal_stdlib>\nusing namespace metal;\n"
-     "kernel void convert(texture2d<float,access::sample> "
-     "y[[texture(0)]],texture2d<float,access::sample> "
-     "uv[[texture(1)]],texture2d<float,access::write> out[[texture(2)]],constant int "
-     "&fullRange[[buffer(0)]],constant int &matrix[[buffer(1)]],uint2 "
-     "g[[thread_position_in_grid]]){if(g.x>=out.get_width()||g.y>=out.get_height())return;"
-     "constexpr sampler s(filter::linear);float2 "
-     "p=(float2(g)+.5)/float2(out.get_width(),out.get_height());float "
-     "l=fullRange?y.sample(s,p).r:(y.sample(s,p).r*255.-16.)/219.;float2 "
-     "ch=(uv.sample(s,p).rg*255.-128.)/(fullRange?255.:224.);float3 "
-     "rgb;if(matrix==1)rgb=float3(l+1.402*ch.y,l-.344136*ch.x-.714136*ch.y,l+1.772*ch.x);else "
-     "if(matrix==2)rgb=float3(l+1.4746*ch.y,l-.164553*ch.x-.571353*ch.y,l+1.8814*ch.x);else "
-     "rgb=float3(l+1.5748*ch.y,l-.1873*ch.x-.4681*ch.y,l+1.8556*ch.x);out.write(float4(clamp(rgb,0."
-     ",1.),1),g);}"
-     "struct V{float4 pos[[position]];float2 uv;};vertex V vert(uint i[[vertex_id]]){float2 "
-     "a=float2((i<<1)&2,i&2);return {float4(a*float2(2,-2)+float2(-1,1),0,1),a};}"
-     "fragment float4 frag(V v[[stage_in]],texture2d<float> a[[texture(0)]],texture2d<float> "
-     "b[[texture(1)]],constant int &mode[[buffer(0)]],constant float2 "
-     "&aspect[[buffer(1)]]){constexpr sampler s(filter::linear,address::clamp_to_edge);float2 "
-     "p=v.uv;bool split=mode==0;bool right=p.x>=.5;if(split)p.x=fract(p.x*2);float "
-     "ar=aspect.x*(split?.5:1.);if(ar<aspect.y)p.y=(p.y-.5)*aspect.y/ar+.5;else "
-     "p.x=(p.x-.5)*ar/aspect.y+.5;if(any(p<0)||any(p>1))return float4(.035,.04,.05,1);return "
-     "mode==2||(split&&!right)?a.sample(s,p):b.sample(s,p);}"
-     "kernel void blend(texture2d<float,access::read> "
-     "a[[texture(0)]],texture2d<float,access::read> b[[texture(1)]],texture2d<float,access::write> "
-     "dst[[texture(2)]],constant float &phase[[buffer(0)]],uint2 "
-     "g[[thread_position_in_grid]]){if(g.x>=dst.get_width()||g.y>=dst.get_height())return;dst."
-     "write(mix(a.read(g),b.read(g),phase),g);}";
-@interface MCVideoEngine ()
+#include "internal/MCProductionShaderSource.hpp"
+static NSString *MCShaderSource(void) {
+    return [NSString stringWithUTF8String:kMCProductionMetalSource];
+}
+
+// Compiled pipeline resources are immutable and may be shared across engine
+// instances using the same Metal device and layer format.
+@interface MCPipelineBundle : NSObject
+@property (nonatomic, strong) id<MTLComputePipelineState> convert;
+@property (nonatomic, strong) id<MTLComputePipelineState> blend;
+@property (nonatomic, strong) id<MTLRenderPipelineState> render;
+@property (nonatomic) BOOL precompiled;
+@end
+@implementation MCPipelineBundle
+@end
+
+static MCPipelineBundle *MCProductionPipelines(id<MTLDevice> device,
+                                               MTLPixelFormat format,
+                                               NSError **error,
+                                               BOOL *cacheHit) {
+    static std::mutex mutex;
+    static NSMutableDictionary<NSString *, MCPipelineBundle *> *cache;
+
+    std::scoped_lock lock(mutex);
+    if (!cache) {
+        cache = [NSMutableDictionary dictionary];
+    }
+
+    NSString *key =
+        [NSString stringWithFormat:@"%p:%lu", (__bridge void *)device, (unsigned long)format];
+    MCPipelineBundle *cached = cache[key];
+    if (cached) {
+        if (cacheHit) {
+            *cacheHit = YES;
+        }
+        return cached;
+    }
+    if (cacheHit) {
+        *cacheHit = NO;
+    }
+
+    NSError *libraryError = nil;
+    NSURL *libraryURL = [[NSBundle mainBundle] URLForResource:@"MetalCadence"
+                                                withExtension:@"metallib"];
+    id<MTLLibrary> library = nil;
+    BOOL precompiled = NO;
+    if (libraryURL) {
+        library = [device newLibraryWithURL:libraryURL error:&libraryError];
+        precompiled = library != nil;
+    }
+    if (!library) {
+        library = [device newLibraryWithSource:MCShaderSource() options:nil error:&libraryError];
+    }
+    if (!library) {
+        if (error) {
+            *error = libraryError ?: MCError(@"Production shader library unavailable");
+        }
+        return nil;
+    }
+
+    MCPipelineBundle *result = [MCPipelineBundle new];
+    result.precompiled = precompiled;
+    result.convert =
+        [device newComputePipelineStateWithFunction:[library newFunctionWithName:@"convert"]
+                                              error:&libraryError];
+    result.blend =
+        [device newComputePipelineStateWithFunction:[library newFunctionWithName:@"blend"]
+                                              error:&libraryError];
+
+    MTLRenderPipelineDescriptor *renderDescriptor = [MTLRenderPipelineDescriptor new];
+    renderDescriptor.vertexFunction = [library newFunctionWithName:@"vert"];
+    renderDescriptor.fragmentFunction = [library newFunctionWithName:@"frag"];
+    renderDescriptor.colorAttachments[0].pixelFormat = format;
+    result.render = [device newRenderPipelineStateWithDescriptor:renderDescriptor
+                                                           error:&libraryError];
+
+    if (!result.convert || !result.blend || !result.render) {
+        if (error) {
+            *error = libraryError ?: MCError(@"Production Metal pipeline unavailable");
+        }
+        return nil;
+    }
+
+    cache[key] = result;
+    return result;
+}
+
+@interface MCVideoEngine () {
+    std::shared_ptr<metalcadence::TextureBudget> _textureBudget;
+    std::bitset<4> _availableGPUSlots;
+}
 @property (nonatomic, readwrite, copy) MCVideoConfiguration *configuration;
 @property (atomic, readwrite) BOOL running;
 @property (atomic, readwrite) double currentPlayoutDelay;
@@ -164,10 +260,12 @@ static NSString *const MCShader =
 @property id<MTLCommandQueue> gpu;
 @property id<MTLComputePipelineState> convert, blend;
 @property id<MTLRenderPipelineState> render;
+@property double pipelineInitMs;
+@property BOOL pipelineCacheHit, precompiledShaderLibrary;
 @property id<MTLFXSpatialScaler> scaler;
 @property id<MTLTexture> scratch;
 @property NSArray *scalers, *scratches;
-@property NSMutableIndexSet *freeSlots;
+
 @property dispatch_group_t gpuGroup;
 @property (atomic) NSInteger batchesInFlight, peakBatches;
 @property NSMutableArray *readySamples, *hashSamples;
@@ -231,7 +329,10 @@ static NSString *const MCShader =
         c.outputWidth < 2 || c.outputHeight < 2 ||
         !(c.multiplier == 1 || c.multiplier == 2 || c.multiplier == 4) ||
         !isfinite(c.minimumDelay) || !isfinite(c.maximumDelay) || !isfinite(c.playoutDelay) ||
-        c.minimumDelay < 0 || c.maximumDelay < c.minimumDelay) {
+        c.minimumDelay < 0 || c.maximumDelay < c.minimumDelay || c.gpuTextureBudgetMiB < 64 ||
+        c.gpuTextureBudgetMiB > 16384 || c.maxCachedTexturesPerPool > 256 ||
+        c.preallocatedTexturesPerPool > c.maxCachedTexturesPerPool ||
+        c.maxConcurrentGPUBatches < 1 || c.maxConcurrentGPUBatches > 4) {
         if (error)
             *error = MCError(@"Invalid configuration");
         return nil;
@@ -250,26 +351,22 @@ static NSString *const MCShader =
     _layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
     _gpu = [_device newCommandQueue];
     NSError *e = nil;
-    id<MTLLibrary> lib = [_device newLibraryWithSource:MCShader options:nil error:&e];
-    if (!lib) {
-        if (error)
-            *error = e;
+    double pipelineStarted = CACurrentMediaTime();
+    BOOL cacheHit = NO;
+    MCPipelineBundle *pipelines = MCProductionPipelines(_device, _layer.pixelFormat, &e, &cacheHit);
+    if (!pipelines) {
+        if (error) {
+            *error = e ?: MCError(@"Production shaders unavailable");
+        }
         return nil;
     }
-    _convert = [_device newComputePipelineStateWithFunction:[lib newFunctionWithName:@"convert"]
-                                                      error:&e];
-    _blend = [_device newComputePipelineStateWithFunction:[lib newFunctionWithName:@"blend"]
-                                                    error:&e];
-    MTLRenderPipelineDescriptor *rd = [MTLRenderPipelineDescriptor new];
-    rd.vertexFunction = [lib newFunctionWithName:@"vert"];
-    rd.fragmentFunction = [lib newFunctionWithName:@"frag"];
-    rd.colorAttachments[0].pixelFormat = _layer.pixelFormat;
-    _render = [_device newRenderPipelineStateWithDescriptor:rd error:&e];
-    if (!_convert || !_blend || !_render) {
-        if (error)
-            *error = e ?: MCError(@"Metal pipeline unavailable");
-        return nil;
-    }
+    _convert = pipelines.convert;
+    _blend = pipelines.blend;
+    _render = pipelines.render;
+    _pipelineInitMs = (CACurrentMediaTime() - pipelineStarted) * 1000;
+    _pipelineCacheHit = cacheHit;
+    _precompiledShaderLibrary = pipelines.precompiled;
+
     MTLFXSpatialScalerDescriptor *sd = [MTLFXSpatialScalerDescriptor new];
     sd.inputWidth = c.inputWidth;
     sd.inputHeight = c.inputHeight;
@@ -278,30 +375,40 @@ static NSString *const MCShader =
     sd.colorTextureFormat = MTLPixelFormatRGBA8Unorm;
     sd.outputTextureFormat = MTLPixelFormatRGBA8Unorm;
     sd.colorProcessingMode = MTLFXSpatialScalerColorProcessingModePerceptual;
-    _scaler = [sd newSpatialScalerWithDevice:_device];
-    if (!_scaler) {
-        if (error)
-            *error = MCError(@"MetalFX scaler unsupported");
-        return nil;
-    }
     MTLTextureDescriptor *in =
         [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
                                                            width:c.inputWidth
                                                           height:c.inputHeight
                                                        mipmapped:NO];
     in.storageMode = MTLStorageModePrivate;
-    in.usage = MTLTextureUsageShaderWrite | MTLTextureUsageShaderRead | _scaler.colorTextureUsage;
-    _scratch = [_device newTextureWithDescriptor:in];
-    id<MTLFXSpatialScaler> second = [sd newSpatialScalerWithDevice:_device];
-    id<MTLTexture> secondScratch = [_device newTextureWithDescriptor:in];
-    if (!second || !secondScratch || !_scratch) {
-        if (error)
-            *error = MCError(@"Second GPU slot unavailable");
-        return nil;
+
+    NSMutableArray<id<MTLFXSpatialScaler>> *scalers = [NSMutableArray new];
+    NSMutableArray<id<MTLTexture>> *scratches = [NSMutableArray new];
+    for (NSUInteger slot = 0; slot < c.maxConcurrentGPUBatches; ++slot) {
+        id<MTLFXSpatialScaler> scaler = [sd newSpatialScalerWithDevice:_device];
+        if (!scaler) {
+            if (error)
+                *error = MCError(@"MetalFX scaler slot unavailable");
+            return nil;
+        }
+
+        in.usage =
+            MTLTextureUsageShaderWrite | MTLTextureUsageShaderRead | scaler.colorTextureUsage;
+        id<MTLTexture> scratch = [_device newTextureWithDescriptor:in];
+        if (!scratch) {
+            if (error)
+                *error = MCError(@"MetalFX scratch slot unavailable");
+            return nil;
+        }
+
+        [scalers addObject:scaler];
+        [scratches addObject:scratch];
+        _availableGPUSlots.set(slot);
     }
-    _scalers = @[ _scaler, second ];
-    _scratches = @[ _scratch, secondScratch ];
-    _freeSlots = [NSMutableIndexSet indexSetWithIndexesInRange:NSMakeRange(0, 2)];
+    _scalers = [scalers copy];
+    _scratches = [scratches copy];
+    _scaler = _scalers[0];
+    _scratch = _scratches[0];
     _gpuGroup = dispatch_group_create();
     MTLTextureDescriptor *out =
         [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
@@ -310,16 +417,18 @@ static NSString *const MCShader =
                                                        mipmapped:NO];
     out.storageMode = MTLStorageModePrivate;
     out.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite | _scaler.outputTextureUsage;
-    _pool = [MCTexturePool new];
-    _pool.lock = [NSLock new];
-    _pool.free = [NSMutableArray new];
-    _pool.device = _device;
-    _pool.descriptor = out;
-    _nativePool = [MCTexturePool new];
-    _nativePool.lock = [NSLock new];
-    _nativePool.free = [NSMutableArray new];
-    _nativePool.device = _device;
-    _nativePool.descriptor = in;
+    _textureBudget = std::make_shared<metalcadence::TextureBudget>(
+        static_cast<std::size_t>(c.gpuTextureBudgetMiB) * 1024 * 1024);
+    _pool = [[MCTexturePool alloc] initWithDevice:_device
+                                       descriptor:out
+                                           budget:_textureBudget
+                                    cacheCapacity:c.maxCachedTexturesPerPool
+                                      preallocate:c.preallocatedTexturesPerPool];
+    _nativePool = [[MCTexturePool alloc] initWithDevice:_device
+                                             descriptor:in
+                                                 budget:_textureBudget
+                                          cacheCapacity:c.maxCachedTexturesPerPool
+                                            preallocate:c.preallocatedTexturesPerPool];
     if (CVMetalTextureCacheCreate(NULL, NULL, _device, NULL, &_cache) != kCVReturnSuccess) {
         if (error)
             *error = MCError(@"Metal texture cache unavailable");
@@ -581,7 +690,7 @@ static uint64_t MCNEONFingerprint(CVPixelBufferRef b) {
     uint8x16_t accum = vdupq_n_u8(0);
     CVPixelBufferLockBaseAddress(b, kCVPixelBufferLock_ReadOnly);
     for (int p = 0; p < 2; p++) {
-        const uint8_t *base = CVPixelBufferGetBaseAddressOfPlane(b, p);
+        const uint8_t *base = (const uint8_t *)CVPixelBufferGetBaseAddressOfPlane(b, p);
         size_t stride = CVPixelBufferGetBytesPerRowOfPlane(b, p),
                width = CVPixelBufferGetWidthOfPlane(b, p) * (p ? 2 : 1),
                height = CVPixelBufferGetHeightOfPlane(b, p);
@@ -611,7 +720,7 @@ static uint64_t MCNEONFingerprint(CVPixelBufferRef b) {
     CVPixelBufferLockBaseAddress(b, kCVPixelBufferLock_ReadOnly);
     uint64_t h = 1469598103934665603ULL;
     for (int plane = 0; plane < 2; plane++) {
-        const uint8_t *data = CVPixelBufferGetBaseAddressOfPlane(b, plane);
+        const uint8_t *data = (const uint8_t *)CVPixelBufferGetBaseAddressOfPlane(b, plane);
         size_t stride = CVPixelBufferGetBytesPerRowOfPlane(b, plane),
                width = CVPixelBufferGetWidthOfPlane(b, plane) * (plane ? 2 : 1),
                height = CVPixelBufferGetHeightOfPlane(b, plane);
@@ -635,8 +744,8 @@ static BOOL MCEqualNV12(CVPixelBufferRef a, CVPixelBufferRef b) {
     }
     BOOL equal = YES;
     for (int p = 0; p < 2 && equal; p++) {
-        const uint8_t *x = CVPixelBufferGetBaseAddressOfPlane(a, p),
-                      *y = CVPixelBufferGetBaseAddressOfPlane(b, p);
+        const uint8_t *x = (const uint8_t *)CVPixelBufferGetBaseAddressOfPlane(a, p),
+                      *y = (const uint8_t *)CVPixelBufferGetBaseAddressOfPlane(b, p);
         size_t w = CVPixelBufferGetWidthOfPlane(a, p) * (p ? 2 : 1),
                h = CVPixelBufferGetHeightOfPlane(a, p),
                xs = CVPixelBufferGetBytesPerRowOfPlane(a, p),
@@ -680,8 +789,8 @@ static void MCInitializeColorRangeLUT(void) {
         return NULL;
     }
     for (int plane = 0; plane < 2; plane++) {
-        const uint8_t *src = CVPixelBufferGetBaseAddressOfPlane(input, plane);
-        uint8_t *dst = CVPixelBufferGetBaseAddressOfPlane(output, plane);
+        const uint8_t *src = (const uint8_t *)CVPixelBufferGetBaseAddressOfPlane(input, plane);
+        uint8_t *dst = (uint8_t *)CVPixelBufferGetBaseAddressOfPlane(output, plane);
         size_t width = CVPixelBufferGetWidthOfPlane(input, plane) * (plane ? 2 : 1),
                height = CVPixelBufferGetHeightOfPlane(input, plane);
         size_t ss = CVPixelBufferGetBytesPerRowOfPlane(input, plane),
@@ -782,7 +891,7 @@ static void MCInitializeColorRangeLUT(void) {
     while (self.running) {
         @autoreleasepool {
             [_lock lock];
-            if (!_pendingFrames.count || !_freeSlots.count) {
+            if (!_pendingFrames.count || _availableGPUSlots.none()) {
                 _draining = NO;
                 [_lock unlock];
                 return;
@@ -891,9 +1000,15 @@ static void MCInitializeColorRangeLUT(void) {
     if (mult > 1 && (delta <= 0 || delta > .15))
         return;
     [_lock lock];
-    NSUInteger slot = _freeSlots.firstIndex;
-    if (slot != NSNotFound)
-        [_freeSlots removeIndex:slot];
+    NSUInteger slot = NSNotFound;
+    for (NSUInteger candidate = 0; candidate < _configuration.maxConcurrentGPUBatches;
+         ++candidate) {
+        if (_availableGPUSlots.test(candidate)) {
+            _availableGPUSlots.reset(candidate);
+            slot = candidate;
+            break;
+        }
+    }
     if (slot != NSNotFound) {
         self.batchesInFlight++;
         self.peakBatches = MAX(self.peakBatches, self.batchesInFlight);
@@ -1139,7 +1254,7 @@ static void MCInitializeColorRangeLUT(void) {
                     }
                 }
                 [self.lock lock];
-                [self.freeSlots addIndex:slot];
+                self->_availableGPUSlots.set(slot);
                 self.batchesInFlight--;
                 BOOL resume = self.running && self.pendingFrames.count && !self.draining;
                 if (resume)
@@ -1200,7 +1315,7 @@ static void MCInitializeColorRangeLUT(void) {
                                                                       channels:2]
                             frameCapacity:(AVAudioFrameCount)count];
                     buf.frameLength = (AVAudioFrameCount)count;
-                    const float *p = data.bytes;
+                    const float *p = (const float *)data.bytes;
                     for (NSUInteger j = 0; j < count; j++) {
                         buf.floatChannelData[0][j] = p[2 * j];
                         buf.floatChannelData[1][j] = p[2 * j + 1];
@@ -1303,10 +1418,28 @@ static void MCInitializeColorRangeLUT(void) {
     m[@"audioLateDrops"] = @(self.audioLateDrops);
     m[@"audioTooFarDrops"] = @(self.audioTooFarDrops);
     m[@"audioBackpressureDrops"] = @(self.audioBackpressureDrops);
+    m[@"pipelineInitializationMs"] = @(self.pipelineInitMs);
+    m[@"pipelineCacheHit"] = @(self.pipelineCacheHit);
+    m[@"precompiledShaderLibrary"] = @(self.precompiledShaderLibrary);
     m[@"textureAllocations"] = @(_pool.allocations);
     m[@"textureReuses"] = @(_pool.reuses);
     m[@"nativeTextureAllocations"] = @(_nativePool.allocations);
     m[@"nativeTextureReuses"] = @(_nativePool.reuses);
+    m[@"textureEvictions"] = @(_pool.evictions);
+    m[@"nativeTextureEvictions"] = @(_nativePool.evictions);
+    m[@"textureBudgetDenied"] = @(_pool.denied + _nativePool.denied);
+    m[@"cachedOutputTextures"] = @(_pool.cachedCount);
+    m[@"cachedNativeTextures"] = @(_nativePool.cachedCount);
+    m[@"gpuTextureBudgetMiB"] = @(_configuration.gpuTextureBudgetMiB);
+    m[@"maxConcurrentGPUBatches"] = @(_configuration.maxConcurrentGPUBatches);
+    m[@"preallocatedTexturesPerPool"] = @(_configuration.preallocatedTexturesPerPool);
+    m[@"maxCachedTexturesPerPool"] = @(_configuration.maxCachedTexturesPerPool);
+    {
+        std::scoped_lock budgetLock(_textureBudget->mutex);
+        m[@"textureBudgetActiveMiB"] = @(_textureBudget->activeBytes / 1048576.0);
+        m[@"textureBudgetCachedMiB"] = @(_textureBudget->cachedBytes / 1048576.0);
+        m[@"textureBudgetPeakMiB"] = @(_textureBudget->peakBytes / 1048576.0);
+    }
     if (self.latencyController)
         [m addEntriesFromDictionary:[self.latencyController metrics]];
     m[@"playoutDelayMs"] = @(self.currentPlayoutDelay * 1000);

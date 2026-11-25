@@ -59,6 +59,17 @@
                                   ? MCInterpolationBackendLinearBlend
                                   : (MCInterpolationBackend)self.interpolation.indexOfSelectedItem);
     c.adaptiveMultiplier = c.multiplier == 4 && self.fallbackToggle.state == NSControlStateValueOn;
+    for (NSString *argument in NSProcessInfo.processInfo.arguments) {
+        if ([argument hasPrefix:@"--pool-prewarm="]) {
+            c.preallocatedTexturesPerPool = [[argument substringFromIndex:15] integerValue];
+        } else if ([argument hasPrefix:@"--pool-capacity="]) {
+            c.maxCachedTexturesPerPool = [[argument substringFromIndex:16] integerValue];
+        } else if ([argument hasPrefix:@"--pool-budget-mib="]) {
+            c.gpuTextureBudgetMiB = [[argument substringFromIndex:18] integerValue];
+        } else if ([argument hasPrefix:@"--gpu-slots="]) {
+            c.maxConcurrentGPUBatches = [[argument substringFromIndex:12] integerValue];
+        }
+    }
     c.audioEnabled = YES;
     NSError *e = nil;
     self.engine = [[MCVideoEngine alloc] initWithConfiguration:c
@@ -78,12 +89,12 @@
     NSString *path = [self.base
         stringByAppendingPathComponent:[NSString stringWithFormat:@"capture-%@.ring", self.runID]];
     int fd = -1;
-    VCRing *ring = MAP_FAILED;
+    VCRing *ring = (VCRing *)MAP_FAILED;
     while (!self.stopping) {
         fd = open(path.fileSystemRepresentation, O_RDONLY);
         struct stat st;
         if (fd >= 0 && fstat(fd, &st) == 0 && st.st_size == sizeof(VCRing)) {
-            ring = mmap(NULL, sizeof(VCRing), PROT_READ, MAP_SHARED, fd, 0);
+            ring = (VCRing *)mmap(NULL, sizeof(VCRing), PROT_READ, MAP_SHARED, fd, 0);
             if (ring != MAP_FAILED && ring->magic == VC_MAGIC)
                 break;
             if (ring != MAP_FAILED)
@@ -96,7 +107,7 @@
     if (ring == MAP_FAILED)
         return;
     uint64_t next = 1;
-    unsigned char *data = malloc(VC_BYTES);
+    unsigned char *data = (unsigned char *)malloc(VC_BYTES);
     float pcm[VC_AUDIO * 2];
     while (!self.stopping) {
         @autoreleasepool {
@@ -139,7 +150,7 @@
             }
             CVPixelBufferLockBaseAddress(pb, 0);
             for (int plane = 0; plane < 2; plane++) {
-                uint8_t *d = CVPixelBufferGetBaseAddressOfPlane(pb, plane);
+                uint8_t *d = (uint8_t *)CVPixelBufferGetBaseAddressOfPlane(pb, plane);
                 size_t stride = CVPixelBufferGetBytesPerRowOfPlane(pb, plane);
                 const uint8_t *src = data + (plane ? VC_W * VC_H : 0);
                 for (int y = 0; y < (plane ? VC_H / 2 : VC_H); y++)
@@ -501,6 +512,25 @@
             if (value)
                 [self.policies selectItemAtIndex:value.integerValue];
         }
+    // A 60 Hz secondary monitor cannot produce a fair 165 Hz benchmark.
+    // Move only the automated benchmark, without modifying display modes.
+    if (benchmark && !uiStress) {
+        NSScreen *fastest = nil;
+        for (NSScreen *screen in NSScreen.screens) {
+            if (!fastest || screen.maximumFramesPerSecond > fastest.maximumFramesPerSecond) {
+                fastest = screen;
+            }
+        }
+        if (fastest) {
+            NSRect visible = fastest.visibleFrame;
+            CGFloat width = MIN(1300.0, visible.size.width - 40.0);
+            CGFloat height = MIN(780.0, visible.size.height - 40.0);
+            NSRect placement = NSMakeRect(
+                NSMidX(visible) - width / 2.0, NSMidY(visible) - height / 2.0, width, height);
+            [self.window setFrame:placement display:YES];
+        }
+    }
+
     [self.window makeKeyAndOrderFront:nil];
     [NSApp activateIgnoringOtherApps:YES];
     BOOL four = [NSProcessInfo.processInfo.arguments containsObject:@"--4x"],
