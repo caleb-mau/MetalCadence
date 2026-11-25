@@ -30,3 +30,21 @@ Run the existing SDK 60 Hz visible-window replay benchmark and analyze JSONL:
 
 Compare at least five alternating baseline/candidate trials after optimizing a
 specific measured bottleneck. Skip occluded or wrong-refresh runs.
+
+## First native measured result, M5, 60 Hz (2026-11-25)
+
+One seeded 1080p60 input / 30 unique fps / 1440p 2x replay:
+- 59.08 fresh fps, 0.4358 ms drawn callback P95
+- Encode 0.2481 ms, command creation 0.0446 ms, commit 0.0722 ms
+- Lock-held 0.0155 ms, selection 0.0072 ms, drawable lookup 0.0008 ms P95
+- Source-to-ready 64.34 ms, ready-to-select 44.045 ms, selected-to-present
+  50.025 ms, GPU queue wait 0.839 ms P95
+- Source-to-present P50 132.66 ms; no GPU/VT errors, 0 deadline misses.
+- Latency controller repeatedly saturated pressure safety near 48 ms and
+  playout delay at 125 ms; total queue overflow 0, 60 Hz display. Single
+  supersessions despite a healthy GPU appeared to add safety headroom.
+
+This is evidence that additional CPU scheduling micro-optimizations cannot
+solve the dominant delay. Next experiment: conservative pressure classification
+of benign single supersessions vs genuine multi-frame backlog/overflow. The
+new controller policy must pass both 60 Hz frame integrity and latency metrics.
