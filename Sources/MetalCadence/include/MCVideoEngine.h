@@ -3,7 +3,7 @@
 #import <CoreVideo/CoreVideo.h>
 #import <AVFoundation/AVFoundation.h>
 NS_ASSUME_NONNULL_BEGIN
-typedef NS_ENUM(NSInteger, MCVideoPresentation) { MCVideoPresentationCompare, MCVideoPresentationEnhanced, MCVideoPresentationOriginal };
+typedef NS_ENUM(NSInteger, MCVideoPresentation) { MCVideoPresentationCompare, MCVideoPresentationEnhanced, MCVideoPresentationOriginal, MCVideoPresentationUpscalingOnly, MCVideoPresentationFrameGenerationOnly };
 API_AVAILABLE(macos(26.0))
 @interface MCVideoConfiguration : NSObject <NSCopying>
 @property NSInteger inputWidth,inputHeight,outputWidth,outputHeight;

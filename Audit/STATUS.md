@@ -1,0 +1,11 @@
+# Engineering audit: initial controlled experiments
+
+All runs use the independent 1080p replay process on the M5 Mac at the existing display setting, with seeded packet jitter/drops (20261125). These are short screening runs, not thermal qualification. The baseline and pacing/pipeline variants ran 12 seconds; the completion variant ran 15 seconds. The summary excludes the initial three samples and rejects mode changes or counter resets. Baseline 60-2 is invalid because the mode changed mid-run. Do not compare against that run.
+
+P0: command-buffer-managed presentation is implemented; display-link supplied drawables are used without explicit timed present overrides. Regression tests and five-mode runs passed. No matching FrameLab crash reports found during screening. Physical black-screen, tearing, display switching and fullscreen validation are still open.
+
+P1: two bounded processing slots, separate MetalFX instances, retained input buffers, async GPU completion, separate completion queue, exact byte comparison following sampled hashes, refresh-dependent frame selection, source-native comparison modes and percentile-based playout estimation implemented. Policy and SDK real-GPU tests passed. Performance is mixed: final 30-2, 30-4 and 60-2 throughput is below target; no claim of resolution or production readiness. In particular 60-2 regressed versus the earlier pipeline variant; isolate selection and latency effects before merging. Sampled hash+exact compare is measured; independent GPU/SIMD/perceptual comparison and false-negative testing remain open.
+
+P2: 4x VT configuration is unchanged. Audio uses real soundtrack PCM; actual drift, underrun and acoustic/video correlation testing remains open. Source-to-present timestamps are software measurements, not controller-to-photon. GPU utilization counters may be stale/zero; queue execution times are not system-wide utilization.
+
+Remaining: repeat longer controlled runs, randomized tests, pixel/temporal reconstruction quality validation, physical HDMI and external-display testing, audio drift correction, thermal qualification. The app deliberately restarts per configuration. This branch is an experimental audit checkpoint; do not merge until regressions are resolved.
