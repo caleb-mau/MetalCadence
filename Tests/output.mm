@@ -146,13 +146,15 @@ static CVPixelBufferRef MakeTeleportFrame(bool right) {
     CVPixelBufferUnlockBaseAddress(frame, 0);
     return frame;
 }
-static void TestAbruptGuard(bool nativeResolution) {
+static void TestAbruptGuard(bool nativeResolution, NSInteger multiplier = 2) {
     MCVideoConfiguration *c = [MCVideoConfiguration new];
     c.inputWidth = 1280;
     c.inputHeight = 720;
     c.outputWidth = nativeResolution ? 1280 : 1920;
     c.outputHeight = nativeResolution ? 720 : 1080;
-    c.multiplier = 2;
+    c.multiplier = multiplier;
+    c.interpolationBackend =
+        multiplier == 4 ? MCInterpolationBackendLinearBlend : MCInterpolationBackendVideoToolbox;
     c.suppressAbruptInterpolation = YES;
     c.duplicateDetection = NO;
     c.audioEnabled = NO;
@@ -180,13 +182,13 @@ static void TestAbruptGuard(bool nativeResolution) {
         [NSThread sleepForTimeInterval:.01];
     }
     assert([m[@"processed"] intValue] == inputCount - 1);
-    assert([m[@"scheduledFrames"] intValue] == 2 * (inputCount - 1));
+    assert([m[@"scheduledFrames"] intValue] == multiplier * (inputCount - 1));
     assert([m[@"abruptHoldBatches"] intValue] == inputCount - 1);
     assert([m[@"interpolationErrors"] intValue] == 0);
     assert([m[@"gpuErrors"] intValue] == 0);
     assert([m[@"textureBudgetDenied"] intValue] == 0);
     [engine stop];
-    printf("ABRUPT-GUARD native=%d pairs=%d held=%d errors=0\n",
+    printf("ABRUPT-GUARD native=%d factor=%ld pairs=%d held=%d errors=0\n",
            nativeResolution,
            inputCount - 1,
            inputCount - 1);
@@ -203,6 +205,7 @@ int main(void) {
             TestOutputFrameCount(2, 2, true, MCInterpolationBackendLinearBlend);
             TestAbruptGuard(false);
             TestAbruptGuard(true);
+            TestAbruptGuard(true, 4);
         } else {
             puts("Output test requires macOS 26 or later");
             return 2;
