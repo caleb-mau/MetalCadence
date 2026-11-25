@@ -39,7 +39,8 @@ static const int LabHeight = 720;
 @property BOOL flipped, selfTest;
 @property double lastLeftTime, lastRightTime;
 @property NSUInteger previousLeftFrames, previousRightFrames;
-@property double lastReportAt, leftFPS, rightFPS;
+@property double lastReportAt, leftFPS, rightFPS, startedAt;
+\n @property NSUInteger occludedReportSamples;
 @property float refreshRate;
 - (void)triggerAction;
 - (void)resizeContent;
@@ -282,6 +283,8 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
 }
 - (void)report:(NSTimer *)timer {
     (void)timer;
+    if ((self.window.occlusionState & NSWindowOcclusionStateVisible) == 0)
+        self.occludedReportSamples++;
     NSDictionary *left = [self.leftEngine metrics], *right = [self.rightEngine metrics];
     double now = CACurrentMediaTime();
     double elapsed = self.lastReportAt > 0 ? now - self.lastReportAt : 0;
@@ -410,6 +413,10 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
                     backing:NSBackingStoreBuffered
                       defer:NO];
     self.window.title = @"MetalCadence · Interactive Latency Lab";
+    if (self.selfTest) {
+        self.window.level = NSFloatingWindowLevel;
+        self.window.collectionBehavior = NSWindowCollectionBehaviorCanJoinAllSpaces;
+    }
     self.window.minSize = NSMakeSize(1090, 660);
     self.window.appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
     self.window.delegate = self;
@@ -534,6 +541,7 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
     }
     if (![self startEngine:NO] || ![self startEngine:YES])
         return;
+    self.startedAt = CACurrentMediaTime();
     self.sourceTimer = [NSTimer timerWithTimeInterval:1. / 30
                                                target:self
                                              selector:@selector(sourceTick:)
@@ -573,6 +581,13 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
         @"kind" : @"summary",
         @"launchArguments" : NSProcessInfo.processInfo.arguments,
         @"rightMultiplier" : @(self.quality.indexOfSelectedItem == 1 ? 4 : 2),
+        @"runtimeSeconds" : @(MAX(.001, CACurrentMediaTime() - self.startedAt)),
+        @"windowOccluded" : @((self.window.occlusionState & NSWindowOcclusionStateVisible) == 0),
+        @"occludedReportSamples" : @(self.occludedReportSamples),
+        @"appActive" : @(NSApp.isActive),
+        @"leftDisplayCallbacks" : left[@"callbacks"] ?: @0,
+        @"rightDisplayCallbacks" : right[@"callbacks"] ?: @0,
+        @"rightHeldRefreshes" : right[@"heldRefreshes"] ?: @0,
         @"inputEvents" : @(self.inputIndex),
         @"sourceFrames" : @(self.sourceFrames),
         @"displayHz" : @(self.refreshRate),
