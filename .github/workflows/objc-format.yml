@@ -1,0 +1,14 @@
+name: Objective-C formatting
+on:
+  push:
+    branches: ["main", "audit/**"]
+  pull_request:
+jobs:
+  clang-format:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify all Objective-C and C source formatting
+        run: ./scripts/format.sh --check
+      - name: Verify whitespace integrity
+        run: git diff --check

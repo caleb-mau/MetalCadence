@@ -151,3 +151,19 @@ The engine accepts either video-range 8-bit NV12 (`420v`) or full-range 8-bit NV
 Conversion-only benchmark at 1080p (M5): `./Audit/run-rangebench.sh` P50 0.615 ms, P95 0.640 ms over 150 samples. This is not an end-to-end latency measure.
 
 The repository ships reproducible experiment summaries in `Audit/verified-results.json`; the companion `Audit/export-results.py` builds the file from isolated local JSONL runs. The source replay media is CC BY 3.0 and is not redistributed in this repository. This is an **experimental** SDK, not yet a production gaming client.
+
+### Adaptive latency and developer source formatting
+
+The experimental `MCLatencyController` tracks GPU-ready timing, refresh
+intervals, output queue pressure and stereo PCM scheduling age. Its goal is to
+preserve fresh frames while reducing unnecessary playout buffering, not to
+guarantee 60 or 120 FPS. See
+[`Audit/latency-controller.md`](Audit/latency-controller.md) for before/after
+measurements, native-audio tradeoffs, unresolved hardware validation and
+reproduction caveats.
+
+Objective-C/C source is formatted consistently with the repository-wide
+`.clang-format`. Run `./scripts/format.sh` after edits and
+`./scripts/format.sh --check` before committing. SDK and demo builds run the
+check automatically; pull requests have an independent formatting job. Removing
+whitespace does not improve runtime performance.

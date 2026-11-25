@@ -1,6 +1,7 @@
 #!/bin/bash
 set -e
 cd "$(dirname "$0")"
+./scripts/format.sh --check
 app=FrameLabSDK.app
 mkdir -p "$app/Contents/MacOS"
 cp Demo/Info.plist "$app/Contents/Info.plist"

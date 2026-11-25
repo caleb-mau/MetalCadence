@@ -32,15 +32,15 @@ typedef NS_ENUM(NSInteger, MCProducerKind) {
 @property double displayFPS;
 @property double minimumFreshFPS;
 @property double preferredFreshFPS;
-+(instancetype)interactiveGameWithSourceFPS:(double)sourceFPS displayFPS:(double)displayFPS;
++ (instancetype)interactiveGameWithSourceFPS:(double)sourceFPS displayFPS:(double)displayFPS;
 @end
 /// A deterministic, side-effect free planning result. Native 1×, 2× or 4× interpolation
 /// is selected at engine initialization; there is no automatic mid-session reconfiguration.
 @interface MCWorkloadPlan : NSObject
-@property(nonatomic,readonly) NSInteger multiplier;
-@property(nonatomic,readonly) double targetFreshFPS,minimumFreshFPS;
-@property(nonatomic,readonly) double minimumDelay,initialDelay,maximumDelay;
-@property(nonatomic,readonly) BOOL adaptiveLatency;
--(instancetype)initWithProfile:(MCWorkloadProfile*)profile;
+@property (nonatomic, readonly) NSInteger multiplier;
+@property (nonatomic, readonly) double targetFreshFPS, minimumFreshFPS;
+@property (nonatomic, readonly) double minimumDelay, initialDelay, maximumDelay;
+@property (nonatomic, readonly) BOOL adaptiveLatency;
+- (instancetype)initWithProfile:(MCWorkloadProfile *)profile;
 @end
 NS_ASSUME_NONNULL_END
