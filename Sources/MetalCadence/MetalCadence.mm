@@ -65,6 +65,13 @@ NSInteger MCSelectDueFrame(const double *pts, NSUInteger count, double target, d
     metalcadence::FixedTimingWindow<> _presentationTargetErrorWindow;
     metalcadence::FixedTimingWindow<> _sourceToReadyWindow, _readyToPresentWindow;
     metalcadence::FixedTimingWindow<> _scheduledWaitWindow;
+    // Fine-grained scheduler profiling. Distinguish CPU execution from time
+    // intentionally awaiting a presentation target or GPU/display callback.
+    metalcadence::FixedTimingWindow<256> _submitLockWaitWindow, _submitMutationWindow;
+    metalcadence::FixedTimingWindow<256> _callbackLockWaitWindow, _callbackLockHeldWindow;
+    metalcadence::FixedTimingWindow<256> _callbackSelectionWindow, _drawableLookupWindow;
+    metalcadence::FixedTimingWindow<256> _commandBufferWindow, _callbackHandlerSetupWindow;
+    metalcadence::FixedTimingWindow<256> _presentCommitWindow, _callbackTotalWindow;
     uint64_t _interactiveSuperseded;
     uint64_t _redundantDrawsSkipped;
 }
@@ -236,7 +243,10 @@ NSInteger MCSelectDueFrame(const double *pts, NSUInteger count, double target, d
 - (BOOL)submit:(MCFrame *)f {
     if (!isfinite(f.pts))
         return NO;
+    const double lockAttempt = CACurrentMediaTime();
     os_unfair_lock_lock(&_lock);
+    const double lockAcquired = CACurrentMediaTime();
+    _submitLockWaitWindow.record((lockAcquired - lockAttempt) * 1000);
     if (!_running || f.identifier <= _lastID) {
         os_unfair_lock_unlock(&_lock);
         return NO;
@@ -254,13 +264,17 @@ NSInteger MCSelectDueFrame(const double *pts, NSUInteger count, double target, d
         [_queue removeObjectAtIndex:0];
         _overflow++;
     }
+    _submitMutationWindow.record((CACurrentMediaTime() - lockAcquired) * 1000);
     os_unfair_lock_unlock(&_lock);
     return YES;
 }
 - (void)metalDisplayLink:(CAMetalDisplayLink *)link needsUpdate:(CAMetalDisplayLinkUpdate *)update {
     @autoreleasepool {
         double now = CACurrentMediaTime(), target = update.targetPresentationTimestamp;
+        const double lockAttempt = CACurrentMediaTime();
         os_unfair_lock_lock(&_lock);
+        const double lockAcquired = CACurrentMediaTime();
+        _callbackLockWaitWindow.record((lockAcquired - lockAttempt) * 1000);
         _callbacks++;
         if (_lastCallback > 0 && now > _lastCallback) {
             _callbackGapWindow.record((now - _lastCallback) * 1000);
@@ -275,11 +289,15 @@ NSInteger MCSelectDueFrame(const double *pts, NSUInteger count, double target, d
             os_unfair_lock_unlock(&_lock);
             return;
         }
-        if (!update.drawable) {
+        const double drawableAttempt = CACurrentMediaTime();
+        id<CAMetalDrawable> drawable = update.drawable;
+        _drawableLookupWindow.record((CACurrentMediaTime() - drawableAttempt) * 1000);
+        if (!drawable) {
             _noFrame++;
             os_unfair_lock_unlock(&_lock);
             return;
         }
+        const double selectionStart = CACurrentMediaTime();
         const auto strategy = self.selectionMode == MCFrameSelectionInteractive
                                   ? metalcadence::DeadlineMode::Interactive
                                   : metalcadence::DeadlineMode::Smooth;
@@ -294,6 +312,7 @@ NSInteger MCSelectDueFrame(const double *pts, NSUInteger count, double target, d
                     _refreshPeriod * MAX(.5, MIN(4.0, self.latenessRefreshAllowance))),
                 strategy)
                 .index;
+        _callbackSelectionWindow.record((CACurrentMediaTime() - selectionStart) * 1000);
         MCFrame *f = selected >= 0 ? _queue[selected] : nil;
         NSUInteger n = selected >= 0 ? (NSUInteger)selected + 1 : 0;
         BOOL fresh = f && f.identifier > _lastID;
@@ -329,9 +348,12 @@ NSInteger MCSelectDueFrame(const double *pts, NSUInteger count, double target, d
         }
         _inFlight++;
         _submitted++;
+        _callbackLockHeldWindow.record((CACurrentMediaTime() - lockAcquired) * 1000);
         os_unfair_lock_unlock(&_lock);
-        id<CAMetalDrawable> d = update.drawable;
+        id<CAMetalDrawable> d = drawable;
+        const double commandBufferAttempt = CACurrentMediaTime();
         id<MTLCommandBuffer> cb = [_commandQueue commandBuffer];
+        const double commandBufferMs = (CACurrentMediaTime() - commandBufferAttempt) * 1000;
         if (!cb) {
             os_unfair_lock_lock(&_lock);
             _inFlight--;
@@ -346,6 +368,7 @@ NSInteger MCSelectDueFrame(const double *pts, NSUInteger count, double target, d
         _encodeCostWindow.record(encodeCostMs);
         os_unfair_lock_unlock(&_lock);
 
+        const double handlerStart = CACurrentMediaTime();
         [d addPresentedHandler:^(id<MTLDrawable> drawable) {
             double t = drawable.presentedTime;
             BOOL notifyFresh = NO;
@@ -396,8 +419,17 @@ NSInteger MCSelectDueFrame(const double *pts, NSUInteger count, double target, d
                 self->_errors++;
             os_unfair_lock_unlock(&self->_lock);
         }];
+        const double handlerSetupMs = (CACurrentMediaTime() - handlerStart) * 1000;
+        const double presentCommitStart = CACurrentMediaTime();
         [cb presentDrawable:d];
         [cb commit];
+        const double commitEnd = CACurrentMediaTime();
+        os_unfair_lock_lock(&_lock);
+        _commandBufferWindow.record(commandBufferMs);
+        _callbackHandlerSetupWindow.record(handlerSetupMs);
+        _presentCommitWindow.record((commitEnd - presentCommitStart) * 1000);
+        _callbackTotalWindow.record((commitEnd - now) * 1000);
+        os_unfair_lock_unlock(&_lock);
     }
 }
 - (MCSchedulerPressure)pressureCounters {
@@ -445,6 +477,16 @@ NSInteger MCSelectDueFrame(const double *pts, NSUInteger count, double target, d
     auto sourceToReady = _sourceToReadyWindow;
     auto readyToPresent = _readyToPresentWindow;
     auto scheduledWait = _scheduledWaitWindow;
+    auto submitLockWait = _submitLockWaitWindow;
+    auto submitMutation = _submitMutationWindow;
+    auto callbackLockWait = _callbackLockWaitWindow;
+    auto callbackLockHeld = _callbackLockHeldWindow;
+    auto callbackSelection = _callbackSelectionWindow;
+    auto drawableLookup = _drawableLookupWindow;
+    auto commandBuffer = _commandBufferWindow;
+    auto handlerSetup = _callbackHandlerSetupWindow;
+    auto presentCommit = _presentCommitWindow;
+    auto callbackTotal = _callbackTotalWindow;
     const auto snapshot_callbackAgeMs =
         _lastCallback > 0 ? (CACurrentMediaTime() - _lastCallback) * 1000 : 0;
     const auto snapshot_callbacks = _callbacks;
@@ -518,6 +560,27 @@ NSInteger MCSelectDueFrame(const double *pts, NSUInteger count, double target, d
     m[@"readyToPresentP95Ms"] = @(readyToPresent.percentile(.95));
     m[@"scheduledWaitP50Ms"] = @(scheduledWait.percentile(.50));
     m[@"scheduledWaitP95Ms"] = @(scheduledWait.percentile(.95));
+    // Stage durations describe CPU work within a scheduler callback.
+    // Scheduled waiting, GPU execution and physical scanout are separate.
+    m[@"schedulerSubmitLockWaitP95Ms"] = @(submitLockWait.percentile(.95));
+    m[@"schedulerSubmitLockWaitP99Ms"] = @(submitLockWait.percentile(.99));
+    m[@"schedulerSubmitMutationP95Ms"] = @(submitMutation.percentile(.95));
+    m[@"schedulerCallbackLockWaitP95Ms"] = @(callbackLockWait.percentile(.95));
+    m[@"schedulerCallbackLockWaitP99Ms"] = @(callbackLockWait.percentile(.99));
+    m[@"schedulerCallbackLockHeldP95Ms"] = @(callbackLockHeld.percentile(.95));
+    m[@"schedulerSelectionP50Ms"] = @(callbackSelection.percentile(.50));
+    m[@"schedulerSelectionP95Ms"] = @(callbackSelection.percentile(.95));
+    m[@"schedulerDrawableLookupP95Ms"] = @(drawableLookup.percentile(.95));
+    m[@"schedulerDrawableLookupP99Ms"] = @(drawableLookup.percentile(.99));
+    m[@"schedulerCommandBufferP95Ms"] = @(commandBuffer.percentile(.95));
+    m[@"schedulerHandlerSetupP95Ms"] = @(handlerSetup.percentile(.95));
+    m[@"schedulerPresentCommitP95Ms"] = @(presentCommit.percentile(.95));
+    m[@"schedulerCallbackTotalP50Ms"] = @(callbackTotal.percentile(.50));
+    m[@"schedulerCallbackTotalP95Ms"] = @(callbackTotal.percentile(.95));
+    m[@"schedulerCallbackTotalP99Ms"] = @(callbackTotal.percentile(.99));
+    m[@"schedulerDrawnSamples"] = @(callbackTotal.size());
+    m[@"schedulerCallbackSamples"] = @(callbackLockWait.size());
+    m[@"schedulerSubmitSamples"] = @(submitMutation.size());
     m[@"readyToSelectP50Ms"] = @(readyToSelect.percentile(.50));
     m[@"readyToSelectP95Ms"] = @(readyToSelect.percentile(.95));
     m[@"readyToSelectP99Ms"] = @(readyToSelect.percentile(.99));
