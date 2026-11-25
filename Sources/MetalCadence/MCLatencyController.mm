@@ -14,7 +14,7 @@
     phaseInterval;
 @property MCFramePolicy policy;
 @property uint64_t previousSuperseded, previousOverflow;
-@property NSUInteger goodSamples, lateSamples, highPressureSamples;
+@property NSUInteger goodSamples, lateSamples, highPressureSamples, benignSupersessions;
 @property NSUInteger observationCount, raisingAdjustments, loweringAdjustments;
 @end
 @implementation MCLatencyController
@@ -120,7 +120,21 @@
             totalOverflow >= _previousOverflow ? totalOverflow - _previousOverflow : 0;
         _previousSuperseded = totalSuperseded;
         _previousOverflow = totalOverflow;
-        if (newlySuperseded || newlyOverflow || queuedFrames > 5) {
+        // A single stale frame superseded during display catch-up is not
+        // evidence that the producer/GPU is overloaded. Raising the playout
+        // buffer in response can cause a feedback loop where routine cadence
+        // jitter pushes interactive gaming all the way to its max delay.
+        // Keep the stronger behavior for Smooth video playback and for real
+        // backlog: multi-frame supersession, queue overflow, or >5 overdue.
+        BOOL interactivePolicy =
+            _policy == MCFramePolicyMinimumBoost || _policy == MCFramePolicyLowestLatency;
+        BOOL benignSingleSkip =
+            interactivePolicy && newlySuperseded == 1 && newlyOverflow == 0 && queuedFrames <= 5;
+        if (benignSingleSkip)
+            _benignSupersessions++;
+        BOOL significantPressure =
+            newlyOverflow || queuedFrames > 5 || newlySuperseded > (interactivePolicy ? 1 : 0);
+        if (significantPressure) {
             double pressure =
                 MAX(1, MIN(4, newlySuperseded + newlyOverflow + (queuedFrames > 5 ? 1 : 0)));
             _pressureSafety = MIN(refresh * 3.0, _pressureSafety + refresh * .45 * pressure);
@@ -193,6 +207,7 @@
             @"latencyObservations" : @(_observationCount),
             @"latencyLateReadyCount" : @(_lateSamples),
             @"latencyPressureEvents" : @(_highPressureSamples),
+            @"latencyBenignSupersessions" : @(_benignSupersessions),
             @"latencyRaised" : @(_raisingAdjustments),
             @"latencyLowered" : @(_loweringAdjustments)
         };

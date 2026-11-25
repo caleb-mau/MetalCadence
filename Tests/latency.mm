@@ -84,6 +84,49 @@ int main(void) {
                         totalOverflow:0];
         assert(pressure.currentDelay < pushed);
         tests++;
+        // A realistic occasional single-frame catch-up must not accumulate
+        // three refreshes of artificial safety margin in interactive mode.
+        MCLatencyController *benign =
+            [[MCLatencyController alloc] initWithMinimumDelay:.010
+                                                 maximumDelay:.125
+                                                 initialDelay:.075
+                                                       policy:MCFramePolicyMinimumBoost];
+        uint64_t singles = 0;
+        for (int i = 0; i < 220; i++) {
+            if (i % 9 == 0)
+                singles++;
+            [benign observeReadyAge:.062
+                      refreshPeriod:1. / 60.
+                     outputInterval:1. / 60.
+                       queuedFrames:0
+                    totalSuperseded:singles
+                      totalOverflow:0];
+        }
+        NSDictionary *benignMetrics = [benign metrics];
+        assert([benignMetrics[@"latencyBenignSupersessions"] unsignedLongLongValue] == singles);
+        assert([benignMetrics[@"latencyPressureEvents"] integerValue] == 0);
+        assert([benignMetrics[@"latencyPressureSafetyMs"] doubleValue] < .001);
+        assert(benign.currentDelay < .090);
+        // Smooth playback retains its old conservatism.
+        MCLatencyController *smoothPressure =
+            [[MCLatencyController alloc] initWithMinimumDelay:.010
+                                                 maximumDelay:.125
+                                                 initialDelay:.075
+                                                       policy:MCFramePolicySmooth];
+        singles = 0;
+        for (int i = 0; i < 70; i++) {
+            if (i % 9 == 0)
+                singles++;
+            [smoothPressure observeReadyAge:.062
+                              refreshPeriod:1. / 60.
+                             outputInterval:1. / 60.
+                               queuedFrames:0
+                            totalSuperseded:singles
+                              totalOverflow:0];
+        }
+        assert([smoothPressure metrics][@"latencyPressureEvents"].integerValue > 0);
+        tests++;
+
         MCLatencyController *audio =
             [[MCLatencyController alloc] initWithMinimumDelay:.010
                                                  maximumDelay:.120
