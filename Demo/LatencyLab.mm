@@ -15,7 +15,8 @@ static const int LabHeight = 720;
 @interface MCLabInputEvent : NSObject
 @property NSUInteger index;
 @property double pressedTime, sourcePTS, leftResponse, rightResponse;
-\n @property double leftSourceToPresentation, rightSourceToPresentation;
+
+@property double leftSourceToPresentation, rightSourceToPresentation;
 @property BOOL written;
 @end
 @implementation MCLabInputEvent
@@ -480,7 +481,8 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
     self.buffer.target = self;
     self.buffer.action = @selector(reconfigure:);
     [root addSubview:self.buffer];
-    \n for (NSString *argument in NSProcessInfo.processInfo.arguments) {
+
+    for (NSString *argument in NSProcessInfo.processInfo.arguments) {
         if ([argument isEqualToString:@"--right-mode=fast"])
             [self.buffer selectItemAtIndex:1];
         else if ([argument isEqualToString:@"--right-mode=fixed55"])
