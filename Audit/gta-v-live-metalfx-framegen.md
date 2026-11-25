@@ -40,3 +40,9 @@ P99 122.55ms, output gap P99 33.33ms. Zero GPU/VT or decoder format errors,
 and window was not occluded. This is a genuine live simultaneous pipeline
 rather than offline re-encoding. We should continue reducing occasional
 missed display refreshes and buffer-induced latency.
+
+
+To validate looping, run the GTA clip test with
+--clip-test-seconds=28. The source clip is 20 seconds long, so the
+summary should report clipLoops>=1 and at least 760 decoded frames.
+This is useful for catching AVAssetReader end-of-file and resource leaks.

@@ -823,10 +823,19 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
     if ([NSProcessInfo.processInfo.arguments containsObject:@"--source=clip"] && !self.selfTest)
         [self toggleClip:nil];
     if (self.clipTest) {
-        dispatch_after(
-            dispatch_time(DISPATCH_TIME_NOW, 14 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
-                [NSApp terminate:nil];
-            });
+        NSInteger seconds = 14;
+        for (NSString *argument in NSProcessInfo.processInfo.arguments) {
+            if ([argument hasPrefix:@"--clip-test-seconds="]) {
+                NSInteger requested = [[argument substringFromIndex:20] integerValue];
+                if (requested >= 10 && requested <= 120)
+                    seconds = requested;
+            }
+        }
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)seconds * NSEC_PER_SEC),
+                       dispatch_get_main_queue(),
+                       ^{
+                           [NSApp terminate:nil];
+                       });
     }
 
     if (self.selfTest) {
