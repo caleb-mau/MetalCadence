@@ -28,3 +28,31 @@ This experimental path MUST NOT become default without stable frame count,
 no new deadline misses, and a confirmed reduction in user-visible source
 delay. The 60Hz measured slack may not hold at 120Hz/165Hz, on an external
 monitor, during occlusion or under thermal load.
+
+## Native results, M5 Mac, 60Hz
+
+All native SDK tests and two application builds passed. The opt-in mode runs
+frame selection on a high-QoS serial queue; default 0ms remains unchanged.
+
+Two paired 20s SDK replay comparisons, same seed and displayed 60Hz:
+
+| Trial | 0ms source->present P50 | 8ms source->present P50 | 0ms fresh FPS | 8ms fresh FPS |
+|---|---:|---:|---:|---:|
+| A | 115.94ms | 118.67ms | 59.47 | 59.47 |
+| B | 147.45ms | 130.31ms | 59.46 | 59.15 |
+
+All four runs had a 16.667ms P99 output gap and zero GPU errors. The 8ms
+request executed with about 8.3-8.5ms actual deferral, 7.6ms P05 remaining
+submission slack, and zero deadline misses in those runs. Presentation
+selection-to-display P95 decreased by roughly the deferral, as expected by
+definition. The full source-to-display P50 did not improve consistently,
+likely due to adaptive buffer and phase variation, so no claimed physical
+latency gain is justified.
+
+A native 1280x720 synthetic source to 2560x1440 MetalFX 2x interactive
+lab with the option enabled produced 740 fresh frames from 378 source frames
+over 12.62s, 16.667ms P99 gap, 0 GPU/interpolation errors, and about
+7.95ms submission slack P05. Six input events completed successfully.
+
+Safe status: an opt-in experiment, not production default, with further
+A/B tests and physical Greenlight/Xbox gameplay required.
