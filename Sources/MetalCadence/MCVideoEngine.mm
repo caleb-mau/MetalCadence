@@ -45,6 +45,7 @@ static NSError *MCError(NSString *message) {
         _preferFreshestFrame = NO;
         _dedicatedPresentationThread = NO;
         _lateLatchDelaySeconds = 0;
+        _gameplayImmediate = NO;
         _skipRedundantPresentations = NO;
         _heldRefreshDrawEvery = 1;
         _presentationLatenessRefreshes = 1.5;
@@ -76,6 +77,7 @@ static NSError *MCError(NSString *message) {
     c.preferFreshestFrame = _preferFreshestFrame;
     c.dedicatedPresentationThread = _dedicatedPresentationThread;
     c.lateLatchDelaySeconds = _lateLatchDelaySeconds;
+    c.gameplayImmediate = _gameplayImmediate;
     c.skipRedundantPresentations = _skipRedundantPresentations;
     c.heldRefreshDrawEvery = _heldRefreshDrawEvery;
     c.presentationLatenessRefreshes = _presentationLatenessRefreshes;
@@ -537,6 +539,7 @@ static MCPipelineBundle *MCProductionPipelines(id<MTLDevice> device,
         };
     _scheduler.useDedicatedRenderThread = c.dedicatedPresentationThread;
     _scheduler.lateLatchDelaySeconds = c.lateLatchDelaySeconds;
+    _scheduler.immediatePresentation = c.gameplayImmediate;
     _scheduler.skipHeldDraws = c.skipRedundantPresentations;
     _scheduler.heldRefreshDrawEvery = c.heldRefreshDrawEvery;
     _scheduler.latenessRefreshAllowance = c.presentationLatenessRefreshes;
@@ -653,7 +656,7 @@ static MCPipelineBundle *MCProductionPipelines(id<MTLDevice> device,
     }
     _refreshPeriod = 1.0 / MAX(30, hz);
     self.latencyController =
-        c.adaptiveLatency
+        c.adaptiveLatency && !c.gameplayImmediate
             ? [[MCLatencyController alloc]
                   initWithMinimumDelay:c.minimumDelay
                           maximumDelay:c.maximumDelay
@@ -663,7 +666,7 @@ static MCPipelineBundle *MCProductionPipelines(id<MTLDevice> device,
     self.budgetController = (c.multiplier == 4 && c.adaptiveMultiplier)
                                 ? [[MCFrameBudgetController alloc] initWithPreferredMultiplier:4]
                                 : nil;
-    self.activeMultiplier = c.multiplier;
+    self.activeMultiplier = c.gameplayImmediate ? 1 : c.multiplier;
     self.nominalSourceInterval =
         (c.profile && c.profile.sourceFPS > 0 && isfinite(c.profile.sourceFPS))
             ? 1. / c.profile.sourceFPS
@@ -965,7 +968,7 @@ static void MCInitializeColorRangeLUT(void) {
             [_lock unlock];
             MCInputFrame *a = _previous;
             _previous = f;
-            if (_configuration.multiplier == 1 ||
+            if (_configuration.gameplayImmediate || _configuration.multiplier == 1 ||
                 self.presentation == MCVideoPresentationOriginal ||
                 self.presentation == MCVideoPresentationUpscalingOnly)
                 [self process:f next:f];
@@ -1060,10 +1063,10 @@ static void MCInitializeColorRangeLUT(void) {
 - (void)process:(MCInputFrame *)a next:(MCInputFrame *)b {
     double start = CACurrentMediaTime(), delta = b.pts - a.pts;
     NSInteger viewMode = self.presentation;
-    NSInteger mult =
-        (viewMode == MCVideoPresentationOriginal || viewMode == MCVideoPresentationUpscalingOnly)
-            ? 1
-            : self.activeMultiplier;
+    NSInteger mult = (_configuration.gameplayImmediate || viewMode == MCVideoPresentationOriginal ||
+                      viewMode == MCVideoPresentationUpscalingOnly)
+                         ? 1
+                         : self.activeMultiplier;
     if (mult > 1 && (delta <= 0 || delta > .15))
         return;
     [_lock lock];
@@ -1282,7 +1285,9 @@ static void MCInitializeColorRangeLUT(void) {
                             self.readyPrediction = estimate.readyPrediction;
                             self.deadlineSafety = estimate.deadlineSafety;
                         }
-                        double pts = a.pts + self.currentPlayoutDelay;
+                        double pts = _configuration.gameplayImmediate
+                                         ? a.pts
+                                         : a.pts + self.currentPlayoutDelay;
                         MCOutputBatch *batch = [MCOutputBatch new];
                         batch.textures = textures;
                         batch.pool = self.pool;
@@ -1502,6 +1507,7 @@ static void MCInitializeColorRangeLUT(void) {
     m[@"precompiledShaderLibrary"] = @(self.precompiledShaderLibrary);
     m[@"textureAllocations"] = @(_pool.allocations);
     m[@"textureReuses"] = @(_pool.reuses);
+    m[@"gameplayImmediate"] = @(_configuration.gameplayImmediate);
     m[@"nativeResolutionBypass"] = @(_nativeResolution);
     m[@"nativeTextureAllocations"] = @(_nativePool.allocations);
     m[@"nativeTextureReuses"] = @(_nativePool.reuses);
