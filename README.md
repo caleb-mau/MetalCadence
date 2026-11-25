@@ -308,3 +308,29 @@ screen recording permissions, audio routing, the JSONL evaluation command,
 and the distinction between added Mac presentation latency and true Xbox
 controller-to-photon latency. Do not treat prerecorded or synthetic test
 performance as proof that Remote Play runs at a locked 60 FPS.
+
+
+## Offline MetalFX 720p → 1440p video export
+
+MetalCadence includes a video-file exporter that uses the **same NV12-to-RGBA
+Metal compute shader** and **MetalFX spatial scaler** as the live engine. It
+does not substitute a CPU resize, draw into a 1440p window, or claim the
+upscaled pixels contain native 1440p image detail.
+
+On Apple Silicon (macOS 26+, Xcode):
+
+    ./build-upscale-clip.sh
+    ./.build/metalfx/upscale-clip /path/to/720p.mp4 /path/to/upscaled-1440p.mp4       "$PWD/.build/metalfx/MetalFX.metallib"
+
+The tool validates 1280×720 input, decodes NV12 using AVFoundation, converts
+BT.709/601/2020 color with the project’s existing Metal shader, runs
+**MetalFX Perceptual spatial 2× upscale**, and encodes a 2560×1440 H.264 MP4.
+It preserves the original frame timestamps and frame rate. It is currently
+**video-only**, so audio is not carried over. Frame generation is deliberately
+disabled to isolate the visual quality and performance cost of spatial
+upscaling. GPU timing measures command-buffer submission through completion,
+including synchronization, not controller-to-photon latency.
+
+A freely reusable 1280×720 sample clip is available from
+https://samplelib.com/sample-videos.html (sample-5s-720p.mp4; permissive
+https://samplelib.com/license.html).

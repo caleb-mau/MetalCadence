@@ -18,7 +18,6 @@ static void LogFailure(NSString *stage, NSError *error) {
 
 static BOOL ConvertAndUpscale(CVPixelBufferRef input,
                               CVPixelBufferRef output,
-                              id<MTLDevice> device,
                               id<MTLCommandQueue> queue,
                               CVMetalTextureCacheRef cache,
                               id<MTLComputePipelineState> convert,
@@ -65,11 +64,13 @@ static BOOL ConvertAndUpscale(CVPixelBufferRef input,
                 ? 1
                 : 0;
         int matrix = 0;
-        CFTypeRef colorMatrix = CVBufferGetAttachment(input, kCVImageBufferYCbCrMatrixKey, NULL);
+        CFTypeRef colorMatrix = CVBufferCopyAttachment(input, kCVImageBufferYCbCrMatrixKey, NULL);
         if (colorMatrix && CFEqual(colorMatrix, kCVImageBufferYCbCrMatrix_ITU_R_601_4))
             matrix = 1;
         else if (colorMatrix && CFEqual(colorMatrix, kCVImageBufferYCbCrMatrix_ITU_R_2020))
             matrix = 2;
+        if (colorMatrix)
+            CFRelease(colorMatrix);
         [encoder setBytes:&fullRange length:sizeof(fullRange) atIndex:0];
         [encoder setBytes:&matrix length:sizeof(matrix) atIndex:1];
         [encoder dispatchThreads:MTLSizeMake(InputWidth, InputHeight, 1)
