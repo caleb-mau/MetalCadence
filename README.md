@@ -294,3 +294,17 @@ until validated on real captured footage.
 In the latency lab, the “Protect abrupt jumps” toggle enables the guard.
 Automated paired comparison: add `--no-scene-guard` to disable it. Metrics
 include `abruptHoldBatches` and `abruptGuardEnabled`.
+
+## Xbox One S GTA V remote-play testing
+
+The interactive latency lab can use **Greenlight Xbox Remote Play** as a
+live window source instead of its synthetic input. On the Mac, build with
+`./build-latency-lab.sh`, open the app, and choose **Connect Greenlight**
+after starting your Xbox session in Greenlight. The lab presents the original
+captured stream on the left and frame-generated output on the right.
+
+See [Greenlight test plan](Audit/greenlight-remote-play.md) for setup,
+screen recording permissions, audio routing, the JSONL evaluation command,
+and the distinction between added Mac presentation latency and true Xbox
+controller-to-photon latency. Do not treat prerecorded or synthetic test
+performance as proof that Remote Play runs at a locked 60 FPS.
