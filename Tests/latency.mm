@@ -37,6 +37,12 @@ int main(void) {
                 assert(c.currentDelay < .075);
                 assert(c.currentDelay > .010);
                 assert([m[@"latencySelectedReadyMs"] doubleValue] > 0);
+                MCLatencyEstimate estimate = [c estimate];
+                assert(fabs(estimate.readyPrediction * 1000 -
+                            [m[@"latencySelectedReadyMs"] doubleValue]) < 1e-8);
+                assert(fabs(estimate.deadlineSafety * 1000 -
+                            [m[@"latencyBaseSafetyMs"] doubleValue] -
+                            [m[@"latencyPressureSafetyMs"] doubleValue]) < 1e-8);
                 printf("LATENCY PROFILE source=%.0f display=%.0f delay=%.3fms safety=%.3fms\n",
                        source,
                        hz,

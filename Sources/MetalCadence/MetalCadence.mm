@@ -63,6 +63,8 @@ NSInteger MCSelectDueFrame(const double *pts, NSUInteger count, double target, d
     metalcadence::FixedTimingWindow<> _readyToSelectWindow, _selectToPresentWindow;
     metalcadence::FixedTimingWindow<> _encodeCostWindow, _gpuQueueWaitWindow;
     metalcadence::FixedTimingWindow<> _presentationTargetErrorWindow;
+    metalcadence::FixedTimingWindow<> _sourceToReadyWindow, _readyToPresentWindow;
+    metalcadence::FixedTimingWindow<> _scheduledWaitWindow;
     uint64_t _interactiveSuperseded;
     uint64_t _redundantDrawsSkipped;
 }
@@ -84,7 +86,7 @@ NSInteger MCSelectDueFrame(const double *pts, NSUInteger count, double target, d
         _heldRefreshDrawEvery = 1;
         _selectionMode = MCFrameSelectionSmooth;
         _maximumPendingFrames = _capacity;
-        _queue = [NSMutableArray new];
+        _queue = [NSMutableArray arrayWithCapacity:_capacity];
 
         _lastID = INT64_MIN;
         _lastDisplayedID = INT64_MIN;
@@ -278,16 +280,20 @@ NSInteger MCSelectDueFrame(const double *pts, NSUInteger count, double target, d
             os_unfair_lock_unlock(&_lock);
             return;
         }
-        double pts[_queue.count ?: 1];
-        for (NSUInteger i = 0; i < _queue.count; i++)
-            pts[i] = _queue[i].pts;
-        NSInteger selected = MCSelectDueFrameWithMode(
-            pts,
-            _queue.count,
-            target,
-            MIN(self.maxFrameLateness,
-                _refreshPeriod * MAX(.5, MIN(4.0, self.latenessRefreshAllowance))),
-            self.selectionMode);
+        const auto strategy = self.selectionMode == MCFrameSelectionInteractive
+                                  ? metalcadence::DeadlineMode::Interactive
+                                  : metalcadence::DeadlineMode::Smooth;
+        NSInteger selected =
+            metalcadence::selectDueBy(
+                [self](std::size_t i) {
+                    return self->_queue[i].pts;
+                },
+                _queue.count,
+                target,
+                MIN(self.maxFrameLateness,
+                    _refreshPeriod * MAX(.5, MIN(4.0, self.latenessRefreshAllowance))),
+                strategy)
+                .index;
         MCFrame *f = selected >= 0 ? _queue[selected] : nil;
         NSUInteger n = selected >= 0 ? (NSUInteger)selected + 1 : 0;
         BOOL fresh = f && f.identifier > _lastID;
@@ -353,6 +359,11 @@ NSInteger MCSelectDueFrame(const double *pts, NSUInteger count, double target, d
                     if (f.sourceTime > 0 && t >= f.sourceTime) {
                         self->_sourceLatencyWindow.record((t - f.sourceTime) * 1000);
                     }
+                    if (f.sourceTime > 0 && f.ready >= f.sourceTime) {
+                        self->_sourceToReadyWindow.record((f.ready - f.sourceTime) * 1000);
+                    }
+                    self->_readyToPresentWindow.record(MAX(0, t - f.ready) * 1000);
+                    self->_scheduledWaitWindow.record(MAX(0, f.pts - f.ready) * 1000);
                     self->_readyAgeSum += MAX(0, t - f.ready);
                     self->_ptsErrorSum += t - f.pts;
                     if (self->_lastPresented > 0 && t > self->_lastPresented) {
@@ -382,18 +393,36 @@ NSInteger MCSelectDueFrame(const double *pts, NSUInteger count, double target, d
         [cb commit];
     }
 }
-- (NSDictionary *)pressureSnapshot {
+- (MCSchedulerPressure)pressureCounters {
+    const double now = CACurrentMediaTime();
     os_unfair_lock_lock(&_lock);
-    NSDictionary *d = @{
-        @"superseded" : @(_superseded),
-        @"reactiveSuperseded" : @(_superseded - _interactiveSuperseded),
-        @"overflow" : @(_overflow),
-        @"queued" : @(_queue.count),
-        @"callbackDeadlineMisses" : @(_missedDeadline),
-        @"callbackAgeMs" : @(_lastCallback > 0 ? (CACurrentMediaTime() - _lastCallback) * 1000 : 0)
-    };
+    NSUInteger overdue = metalcadence::overdueCount(
+        [self](std::size_t i) {
+            return self->_queue[i].pts;
+        },
+        _queue.count,
+        now);
+    MCSchedulerPressure snapshot = {_superseded,
+                                    _superseded - _interactiveSuperseded,
+                                    _overflow,
+                                    _missedDeadline,
+                                    _queue.count,
+                                    overdue,
+                                    _lastCallback > 0 ? MAX(0, now - _lastCallback) * 1000 : 0};
     os_unfair_lock_unlock(&_lock);
-    return d;
+    return snapshot;
+}
+- (NSDictionary *)pressureSnapshot {
+    MCSchedulerPressure snapshot = [self pressureCounters];
+    return @{
+        @"superseded" : @(snapshot.superseded),
+        @"reactiveSuperseded" : @(snapshot.reactiveSuperseded),
+        @"overflow" : @(snapshot.overflow),
+        @"queued" : @(snapshot.queued),
+        @"overdue" : @(snapshot.overdue),
+        @"callbackDeadlineMisses" : @(snapshot.callbackDeadlineMisses),
+        @"callbackAgeMs" : @(snapshot.callbackAgeMs)
+    };
 }
 - (NSDictionary *)metrics {
     os_unfair_lock_lock(&_lock);
@@ -406,35 +435,65 @@ NSInteger MCSelectDueFrame(const double *pts, NSUInteger count, double target, d
     auto encodeCost = _encodeCostWindow;
     auto gpuQueueWait = _gpuQueueWaitWindow;
     auto targetError = _presentationTargetErrorWindow;
-    NSDictionary *base = @{
-        @"callbackAgeMs" : @(_lastCallback > 0 ? (CACurrentMediaTime() - _lastCallback) * 1000 : 0),
-        @"callbacks" : @(_callbacks),
-        @"submitted" : @(_submitted),
-        @"presented" : @(_freshPresented),
-        @"displayRefreshPresentations" : @(_presented),
-        @"heldRefreshes" : @(_heldRefreshes),
-        @"redundantDrawsSkipped" : @(_redundantDrawsSkipped),
-        @"skipHeldDraws" : @(self.skipHeldDraws),
-        @"heldRefreshDrawEvery" : @(self.heldRefreshDrawEvery),
-        @"overflow" : @(_overflow),
-        @"superseded" : @(_superseded),
-        @"interactiveSuperseded" : @(_interactiveSuperseded),
-        @"selectionMode" : @(self.selectionMode),
-        @"maximumPendingFrames" : @(self.maximumPendingFrames),
-        @"latenessRefreshAllowance" : @(self.latenessRefreshAllowance),
-        @"dedicatedRenderThread" : @(self.useDedicatedRenderThread),
-        @"idleRefreshes" : @(_skipped),
-        @"busyRefreshes" : @(_busy),
-        @"noDrawable" : @(_noFrame),
-        @"errors" : @(_errors),
-        @"callbackDeadlineMisses" : @(_missedDeadline),
-        @"queued" : @(_queue.count),
-        @"inFlight" : @(_inFlight),
-        @"displayGPUms" : @(_gpuSum * 1000 / MAX(1, _submitted)),
-        @"readyToPresentMs" : @(_readyAgeSum * 1000 / MAX(1, _freshPresented)),
-        @"ptsErrorMs" : @(_ptsErrorSum * 1000 / MAX(1, _freshPresented))
-    };
+    auto sourceToReady = _sourceToReadyWindow;
+    auto readyToPresent = _readyToPresentWindow;
+    auto scheduledWait = _scheduledWaitWindow;
+    const auto snapshot_callbackAgeMs =
+        _lastCallback > 0 ? (CACurrentMediaTime() - _lastCallback) * 1000 : 0;
+    const auto snapshot_callbacks = _callbacks;
+    const auto snapshot_submitted = _submitted;
+    const auto snapshot_presented = _freshPresented;
+    const auto snapshot_displayRefreshPresentations = _presented;
+    const auto snapshot_heldRefreshes = _heldRefreshes;
+    const auto snapshot_redundantDrawsSkipped = _redundantDrawsSkipped;
+    const auto snapshot_skipHeldDraws = self.skipHeldDraws;
+    const auto snapshot_heldRefreshDrawEvery = self.heldRefreshDrawEvery;
+    const auto snapshot_overflow = _overflow;
+    const auto snapshot_superseded = _superseded;
+    const auto snapshot_interactiveSuperseded = _interactiveSuperseded;
+    const auto snapshot_selectionMode = self.selectionMode;
+    const auto snapshot_maximumPendingFrames = self.maximumPendingFrames;
+    const auto snapshot_latenessRefreshAllowance = self.latenessRefreshAllowance;
+    const auto snapshot_dedicatedRenderThread = self.useDedicatedRenderThread;
+    const auto snapshot_idleRefreshes = _skipped;
+    const auto snapshot_busyRefreshes = _busy;
+    const auto snapshot_noDrawable = _noFrame;
+    const auto snapshot_errors = _errors;
+    const auto snapshot_callbackDeadlineMisses = _missedDeadline;
+    const auto snapshot_queued = _queue.count;
+    const auto snapshot_inFlight = _inFlight;
+    const auto snapshot_displayGPUms = _gpuSum * 1000 / MAX(1, _submitted);
+    const auto snapshot_readyToPresentMs = _readyAgeSum * 1000 / MAX(1, _freshPresented);
+    const auto snapshot_ptsErrorMs = _ptsErrorSum * 1000 / MAX(1, _freshPresented);
     os_unfair_lock_unlock(&_lock);
+    NSDictionary *base = @{
+        @"callbackAgeMs" : @(snapshot_callbackAgeMs),
+        @"callbacks" : @(snapshot_callbacks),
+        @"submitted" : @(snapshot_submitted),
+        @"presented" : @(snapshot_presented),
+        @"displayRefreshPresentations" : @(snapshot_displayRefreshPresentations),
+        @"heldRefreshes" : @(snapshot_heldRefreshes),
+        @"redundantDrawsSkipped" : @(snapshot_redundantDrawsSkipped),
+        @"skipHeldDraws" : @(snapshot_skipHeldDraws),
+        @"heldRefreshDrawEvery" : @(snapshot_heldRefreshDrawEvery),
+        @"overflow" : @(snapshot_overflow),
+        @"superseded" : @(snapshot_superseded),
+        @"interactiveSuperseded" : @(snapshot_interactiveSuperseded),
+        @"selectionMode" : @(snapshot_selectionMode),
+        @"maximumPendingFrames" : @(snapshot_maximumPendingFrames),
+        @"latenessRefreshAllowance" : @(snapshot_latenessRefreshAllowance),
+        @"dedicatedRenderThread" : @(snapshot_dedicatedRenderThread),
+        @"idleRefreshes" : @(snapshot_idleRefreshes),
+        @"busyRefreshes" : @(snapshot_busyRefreshes),
+        @"noDrawable" : @(snapshot_noDrawable),
+        @"errors" : @(snapshot_errors),
+        @"callbackDeadlineMisses" : @(snapshot_callbackDeadlineMisses),
+        @"queued" : @(snapshot_queued),
+        @"inFlight" : @(snapshot_inFlight),
+        @"displayGPUms" : @(snapshot_displayGPUms),
+        @"readyToPresentMs" : @(snapshot_readyToPresentMs),
+        @"ptsErrorMs" : @(snapshot_ptsErrorMs)
+    };
     NSMutableDictionary *m = [base mutableCopy];
     m[@"gapP50Ms"] = @(g.percentile(.50));
     m[@"gapP95Ms"] = @(g.percentile(.95));
@@ -446,6 +505,12 @@ NSInteger MCSelectDueFrame(const double *pts, NSUInteger count, double target, d
     m[@"callbackGapP99Ms"] = @(callbackGaps.percentile(.99));
     m[@"callbackLeadP50Ms"] = @(callbackLead.percentile(.50));
     m[@"callbackLeadP95Ms"] = @(callbackLead.percentile(.95));
+    m[@"sourceToReadyP50Ms"] = @(sourceToReady.percentile(.50));
+    m[@"sourceToReadyP95Ms"] = @(sourceToReady.percentile(.95));
+    m[@"readyToPresentP50Ms"] = @(readyToPresent.percentile(.50));
+    m[@"readyToPresentP95Ms"] = @(readyToPresent.percentile(.95));
+    m[@"scheduledWaitP50Ms"] = @(scheduledWait.percentile(.50));
+    m[@"scheduledWaitP95Ms"] = @(scheduledWait.percentile(.95));
     m[@"readyToSelectP50Ms"] = @(readyToSelect.percentile(.50));
     m[@"readyToSelectP95Ms"] = @(readyToSelect.percentile(.95));
     m[@"readyToSelectP99Ms"] = @(readyToSelect.percentile(.99));

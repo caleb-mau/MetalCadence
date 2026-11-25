@@ -1204,24 +1204,19 @@ static void MCInitializeColorRangeLUT(void) {
                             [self.readySamples removeObjectAtIndex:0];
                         [self.statisticsLock unlock];
                         if (self.latencyController) {
-                            NSDictionary *pressure = [self.scheduler pressureSnapshot];
+                            MCSchedulerPressure pressure = [self.scheduler pressureCounters];
                             double phaseTime = mult > 1 ? delta / mult : delta;
-                            double delay = [self.latencyController
-                                observeReadyAge:readyAge
-                                  refreshPeriod:self.refreshPeriod
-                                 outputInterval:phaseTime
-                                   queuedFrames:[pressure[@"queued"] unsignedIntegerValue]
-                                totalSuperseded:[pressure[@"reactiveSuperseded"]
-                                                    unsignedLongLongValue]
-                                  totalOverflow:[pressure[@"overflow"] unsignedLongLongValue]];
+                            double delay =
+                                [self.latencyController observeReadyAge:readyAge
+                                                          refreshPeriod:self.refreshPeriod
+                                                         outputInterval:phaseTime
+                                                           queuedFrames:pressure.overdue
+                                                        totalSuperseded:pressure.reactiveSuperseded
+                                                          totalOverflow:pressure.overflow];
                             self.currentPlayoutDelay = delay;
-                            NSDictionary *estimate = [self.latencyController metrics];
-                            self.readyPrediction =
-                                [estimate[@"latencySelectedReadyMs"] doubleValue] / 1000.;
-                            self.deadlineSafety =
-                                ([estimate[@"latencyBaseSafetyMs"] doubleValue] +
-                                 [estimate[@"latencyPressureSafetyMs"] doubleValue]) /
-                                1000.;
+                            MCLatencyEstimate estimate = [self.latencyController estimate];
+                            self.readyPrediction = estimate.readyPrediction;
+                            self.deadlineSafety = estimate.deadlineSafety;
                         }
                         double pts = a.pts + self.currentPlayoutDelay;
                         MCOutputBatch *batch = [MCOutputBatch new];

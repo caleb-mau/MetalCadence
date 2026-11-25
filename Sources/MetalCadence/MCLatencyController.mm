@@ -165,6 +165,11 @@
         return _delay;
     }
 }
+- (MCLatencyEstimate)estimate {
+    @synchronized(self) {
+        return {_quantileReady, _baseSafety + _pressureSafety};
+    }
+}
 - (NSDictionary<NSString *, NSNumber *> *)metrics {
     @synchronized(self) {
         return @{

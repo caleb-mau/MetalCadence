@@ -33,6 +33,12 @@ FOUNDATION_EXPORT NSInteger MCSelectDueFrameWithMode(const double *pts,
 typedef void (^MCEncodeBlock)(id<MTLCommandBuffer> commandBuffer,
                               id<CAMetalDrawable> drawable,
                               MCFrame *frame);
+typedef struct {
+    uint64_t superseded, reactiveSuperseded, overflow, callbackDeadlineMisses;
+    NSUInteger queued, overdue;
+    double callbackAgeMs;
+} MCSchedulerPressure;
+
 /// A bounded, timestamp-based Metal presentation engine. All timestamps are host-clock seconds
 /// (CACurrentMediaTime). Start/stop on the main thread; submit from any producer thread. Encode
 /// must be nonblocking.
@@ -65,6 +71,9 @@ typedef void (^MCEncodeBlock)(id<MTLCommandBuffer> commandBuffer,
 - (void)startWithRefreshRate:(float)refreshRate;
 - (void)stop;
 - (BOOL)submit:(MCFrame *)frame;
+/// Allocation-free pressure snapshot for producer-side scheduling. Overdue counts
+/// only frames already past their scheduled presentation time, not future work.
+- (MCSchedulerPressure)pressureCounters;
 /// Lock-bounded pressure counters, without sorting historical latency samples.
 - (NSDictionary<NSString *, NSNumber *> *)pressureSnapshot;
 - (NSDictionary<NSString *, NSNumber *> *)metrics;
