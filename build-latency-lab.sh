@@ -16,10 +16,10 @@ xcrun -sdk macosx metallib /tmp/MetalCadenceLatencyLab.air \
     -o "$resources/MetalCadence.metallib"
 xcrun clang++ -std=c++20 -O3 -fobjc-arc \
     -I Sources/MetalCadence/include -I Tools \
-    Sources/MetalCadence/*.mm Demo/LatencyLab.mm Demo/MCWindowCapture.mm \
+    Sources/MetalCadence/*.mm Demo/LatencyLab.mm Demo/MCWindowCapture.mm Demo/MCLocalClipSource.mm \
     -framework Cocoa -framework Metal -framework MetalKit -framework MetalFX \
     -framework VideoToolbox -framework CoreVideo -framework CoreMedia \
     -framework QuartzCore -framework IOKit -framework ScreenCaptureKit -framework AVFoundation \
-    -framework AudioToolbox -o "$binary/MetalCadenceLatencyLab"
+    -framework AudioToolbox -framework UniformTypeIdentifiers -o "$binary/MetalCadenceLatencyLab"
 codesign --force --sign - "$app"
 echo "Built $app"

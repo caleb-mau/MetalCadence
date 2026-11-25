@@ -1,8 +1,10 @@
 #import <Cocoa/Cocoa.h>
 #import <CoreVideo/CoreVideo.h>
 #import <QuartzCore/QuartzCore.h>
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import "MetalCadence.h"
 #import "MCWindowCapture.h"
+#import "MCLocalClipSource.h"
 #include <cmath>
 
 static const int LabWidth = 1280;
@@ -31,9 +33,13 @@ static const int LabHeight = 720;
 @property NSTextField *heading, *subtitle, *leftTitle, *rightTitle, *leftNumbers, *rightNumbers;
 @property NSTextField *status, *instructions, *footnote;
 @property NSPopUpButton *quality, *buffer, *resolution;
-@property NSButton *triggerButton, *guardSwitch, *sourceButton;
+@property NSButton *triggerButton, *guardSwitch, *sourceButton, *clipButton;
 @property NSTimer *sourceTimer, *metricsTimer;
 @property MCWindowCapture *windowCapture;
+@property MCLocalClipSource *clipSource;
+@property NSString *clipStatus;
+@property (atomic) BOOL clipMode;
+@property BOOL clipTest;
 @property (atomic) BOOL captureMode;
 @property NSString *captureStatus;
 @property CVPixelBufferPoolRef sourcePool;
@@ -260,7 +266,7 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
 }
 - (void)sourceTick:(NSTimer *)timer {
     (void)timer;
-    if (self.captureMode)
+    if (self.captureMode || self.clipMode)
         return;
     if (!self.leftEngine.running || !self.rightEngine.running)
         return;
@@ -300,12 +306,85 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
     [self startEngine:NO];
     [self startEngine:YES];
 }
+- (NSURL *)selectedClipURL {
+    NSString *path = [NSHomeDirectory()
+        stringByAppendingPathComponent:@"Movies/MetalCadence Upscale Tests/source-720p.mp4"];
+    for (NSString *arg in NSProcessInfo.processInfo.arguments) {
+        if ([arg hasPrefix:@"--clip-path="])
+            path = [arg substringFromIndex:12];
+    }
+    return [NSURL fileURLWithPath:path];
+}
+- (void)toggleClip:(id)sender {
+    (void)sender;
+    if (self.clipMode) {
+        self.clipMode = NO;
+        [self.clipSource stop];
+        self.clipStatus = @"Synthetic source";
+        self.clipButton.title = @"Play 720p video";
+        [self restartForCaptureMode];
+        return;
+    }
+    if (self.captureMode) {
+        self.captureMode = NO;
+        [self.windowCapture stop];
+        self.sourceButton.title = @"Connect Greenlight";
+    }
+    NSURL *url = [self selectedClipURL];
+    if (![[NSFileManager defaultManager] fileExistsAtPath:url.path]) {
+        if (self.clipTest) {
+            self.status.stringValue =
+                [NSString stringWithFormat:@"Test video missing: %@", url.path];
+            return;
+        }
+        NSOpenPanel *picker = [NSOpenPanel openPanel];
+        picker.allowedContentTypes = @[ [UTType typeWithFilenameExtension:@"mp4"] ];
+        picker.allowsMultipleSelection = NO;
+        picker.message = @"Choose a 1280 × 720, 30 FPS video to upscale live.";
+        if ([picker runModal] != NSModalResponseOK)
+            return;
+        url = picker.URL;
+    }
+    if (self.resolution.indexOfSelectedItem == 0)
+        [self.resolution selectItemAtIndex:2];
+    self.clipMode = YES;
+    self.clipStatus = @"Decoding local 720p video…";
+    self.clipButton.title = @"Use synthetic";
+    [self restartForCaptureMode];
+    __weak MCLatencyLab *weakSelf = self;
+    [self.clipSource startURL:url
+        onFrame:^(CVPixelBufferRef buffer, double arrival) {
+            MCLatencyLab *lab = weakSelf;
+            if (!lab || !lab.clipMode)
+                return;
+            BOOL source = [lab.leftEngine submitVideo:buffer hostTime:arrival];
+            BOOL enhanced = [lab.rightEngine submitVideo:buffer hostTime:arrival];
+            if (source || enhanced)
+                lab.sourceFrames++;
+        }
+        onStatus:^(NSString *message, NSError *error) {
+            MCLatencyLab *lab = weakSelf;
+            if (!lab)
+                return;
+            lab.clipStatus =
+                error ? [NSString stringWithFormat:@"%@: %@", message, error.localizedDescription]
+                      : message;
+        }];
+}
 - (void)toggleGreenlight:(id)sender {
     (void)sender;
+    if (self.clipMode) {
+        self.clipMode = NO;
+        [self.clipSource stop];
+        self.clipButton.title = @"Play 720p video";
+    }
     if (self.captureMode) {
         self.captureMode = NO;
         [self.windowCapture stop];
         self.captureStatus = @"Synthetic source";
+        self.clipSource = [MCLocalClipSource new];
+        self.clipStatus = @"Synthetic source";
+        self.clipTest = [NSProcessInfo.processInfo.arguments containsObject:@"--clip-test"];
         self.sourceButton.title = @"Connect Greenlight";
         [self restartForCaptureMode];
         return;
@@ -367,7 +446,15 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
     }
     self.lastReportAt = now;
 
-    if (self.captureMode) {
+    if (self.clipMode) {
+        self.instructions.stringValue =
+            [NSString stringWithFormat:
+                          @"Real-time 720p30 playback: %@ · %lu decoded · %lu loops · %lu rejects",
+                          self.clipStatus ?: @"Initializing",
+                          (unsigned long)self.clipSource.frames,
+                          (unsigned long)self.clipSource.loops,
+                          (unsigned long)self.clipSource.rejectedFrames];
+    } else if (self.captureMode) {
         self.instructions.stringValue = [NSString
             stringWithFormat:@"Greenlight: %@ · %lu captured · %lu idle · %lu format mismatches. "
                              @"Control GTA V in Greenlight.",
@@ -400,16 +487,23 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
         self.lastRightTime > 0 && self.lastLeftTime > 0
             ? [NSString stringWithFormat:@"%.0f", self.lastRightTime - self.lastLeftTime]
             : @"—";
-    self.status.stringValue = [NSString
-        stringWithFormat:
-            @"Last input → displayed source frame:  ORIGINAL %@ ms    |    GENERATED %@ ms"
-            @"    |    EXTRA DELAY %@ ms",
-            reference,
-            enhanced,
-            difference];
+    self.status.stringValue =
+        self.clipMode || self.captureMode
+            ? [NSString stringWithFormat:@"Live source: original %.1f FPS  |  enhanced %.1f FPS"
+                                          "  |  MetalFX %@",
+                                         self.leftFPS,
+                                         self.rightFPS,
+                                         self.resolution.titleOfSelectedItem]
+            : [NSString stringWithFormat:@"Last input → displayed source frame:  ORIGINAL %@ ms    "
+                                         @"|    GENERATED %@ ms"
+                                         @"    |    EXTRA DELAY %@ ms",
+                                         reference,
+                                         enhanced,
+                                         difference];
 
-    self.leftTitle.stringValue =
-        self.captureMode ? @"GREENLIGHT / ORIGINAL STREAM" : @"30 FPS  •  ORIGINAL / DIRECT";
+    self.leftTitle.stringValue = self.clipMode      ? @"REAL 720p VIDEO  •  ORIGINAL"
+                                 : self.captureMode ? @"GREENLIGHT / ORIGINAL STREAM"
+                                                    : @"30 FPS  •  ORIGINAL / DIRECT";
     NSString *resolution = @[ @"720p", @"1080p", @"1440p" ][self.resolution.indexOfSelectedItem];
     self.rightTitle.stringValue =
         [NSString stringWithFormat:@"%@ · %@ FPS  •  %@ / VIDEO TOOLBOX",
@@ -453,7 +547,8 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
     self.guardSwitch.frame = NSMakeRect(635, 87, 222, 35);
     self.resolution.frame = NSMakeRect(856, 87, 165, 35);
     self.sourceButton.frame = NSMakeRect(1025, 85, 180, 38);
-    self.footnote.frame = NSMakeRect(24, 23, w - 48, 30);
+    self.clipButton.frame = NSMakeRect(1025, 43, 175, 36);
+    self.footnote.frame = NSMakeRect(24, 23, w - 315, 30);
 }
 - (void)windowDidResize:(NSNotification *)notification {
     (void)notification;
@@ -643,6 +738,12 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
     self.sourceButton.bezelStyle = NSBezelStyleRounded;
     self.sourceButton.enabled = !self.selfTest;
     [root addSubview:self.sourceButton];
+    self.clipButton = [NSButton buttonWithTitle:@"Play 720p video"
+                                         target:self
+                                         action:@selector(toggleClip:)];
+    self.clipButton.bezelStyle = NSBezelStyleRounded;
+    self.clipButton.enabled = !self.selfTest && !self.clipTest;
+    [root addSubview:self.clipButton];
     [self.window makeKeyAndOrderFront:nil];
     [self resizeContent];
 
@@ -676,6 +777,14 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
     if ([NSProcessInfo.processInfo.arguments containsObject:@"--source=greenlight"] &&
         !self.selfTest)
         [self toggleGreenlight:nil];
+    if ([NSProcessInfo.processInfo.arguments containsObject:@"--source=clip"] && !self.selfTest)
+        [self toggleClip:nil];
+    if (self.clipTest) {
+        dispatch_after(
+            dispatch_time(DISPATCH_TIME_NOW, 14 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+                [NSApp terminate:nil];
+            });
+    }
 
     if (self.selfTest) {
         for (NSInteger index = 0; index < 6; ++index) {
@@ -719,7 +828,12 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
         @"rightDisplayCallbacks" : right[@"callbacks"] ?: @0,
         @"rightHeldRefreshes" : right[@"heldRefreshes"] ?: @0,
         @"inputEvents" : @(self.inputIndex),
-        @"sourceMode" : self.captureMode ? @"greenlight" : @"synthetic",
+        @"sourceMode" : self.clipMode ? @"clip"
+        : self.captureMode            ? @"greenlight"
+                                      : @"synthetic",
+        @"clipFramesDecoded" : @(self.clipSource.frames),
+        @"clipLoops" : @(self.clipSource.loops),
+        @"clipRejectedFrames" : @(self.clipSource.rejectedFrames),
         @"windowCaptureSamples" : @(self.windowCapture.deliveredFrames),
         @"windowCaptureIdle" : @(self.windowCapture.idleFrames),
         @"windowCaptureFormatMismatches" : @(self.windowCapture.formatMismatches),
@@ -756,6 +870,8 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
     [self.metricsTimer invalidate];
     self.captureMode = NO;
     [self.windowCapture stop];
+    self.clipMode = NO;
+    [self.clipSource stop];
     self.leftEngine.onFreshFramePresented = nil;
     self.rightEngine.onFreshFramePresented = nil;
     [self.leftEngine stop];
