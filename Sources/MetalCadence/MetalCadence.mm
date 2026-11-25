@@ -72,6 +72,10 @@ NSInteger MCSelectDueFrame(const double *pts, NSUInteger count, double target, d
     metalcadence::FixedTimingWindow<256> _callbackSelectionWindow, _drawableLookupWindow;
     metalcadence::FixedTimingWindow<256> _commandBufferWindow, _callbackHandlerSetupWindow;
     metalcadence::FixedTimingWindow<256> _presentCommitWindow, _callbackTotalWindow;
+    // Host-clock deadline slack for deciding whether late-latching can ever
+    // be safe without missing the OS display link's submission deadline.
+    metalcadence::FixedTimingWindow<256> _submissionDeadlineLeadWindow;
+    metalcadence::FixedTimingWindow<256> _submissionDeadlineSlackWindow;
     uint64_t _interactiveSuperseded;
     uint64_t _redundantDrawsSkipped;
 }
@@ -281,6 +285,7 @@ NSInteger MCSelectDueFrame(const double *pts, NSUInteger count, double target, d
         }
         _lastCallback = now;
         _callbackLeadWindow.record((target - now) * 1000);
+        _submissionDeadlineLeadWindow.record((update.targetTimestamp - now) * 1000);
         if (now > update.targetTimestamp) {
             _missedDeadline++;
         }
@@ -428,6 +433,7 @@ NSInteger MCSelectDueFrame(const double *pts, NSUInteger count, double target, d
         _commandBufferWindow.record(commandBufferMs);
         _callbackHandlerSetupWindow.record(handlerSetupMs);
         _presentCommitWindow.record((commitEnd - presentCommitStart) * 1000);
+        _submissionDeadlineSlackWindow.record((update.targetTimestamp - commitEnd) * 1000);
         _callbackTotalWindow.record((commitEnd - now) * 1000);
         os_unfair_lock_unlock(&_lock);
     }
@@ -487,6 +493,8 @@ NSInteger MCSelectDueFrame(const double *pts, NSUInteger count, double target, d
     auto handlerSetup = _callbackHandlerSetupWindow;
     auto presentCommit = _presentCommitWindow;
     auto callbackTotal = _callbackTotalWindow;
+    auto submissionDeadlineLead = _submissionDeadlineLeadWindow;
+    auto submissionDeadlineSlack = _submissionDeadlineSlackWindow;
     const auto snapshot_callbackAgeMs =
         _lastCallback > 0 ? (CACurrentMediaTime() - _lastCallback) * 1000 : 0;
     const auto snapshot_callbacks = _callbacks;
@@ -578,6 +586,11 @@ NSInteger MCSelectDueFrame(const double *pts, NSUInteger count, double target, d
     m[@"schedulerCallbackTotalP50Ms"] = @(callbackTotal.percentile(.50));
     m[@"schedulerCallbackTotalP95Ms"] = @(callbackTotal.percentile(.95));
     m[@"schedulerCallbackTotalP99Ms"] = @(callbackTotal.percentile(.99));
+    m[@"schedulerSubmissionDeadlineLeadP05Ms"] = @(submissionDeadlineLead.percentile(.05));
+    m[@"schedulerSubmissionDeadlineLeadP50Ms"] = @(submissionDeadlineLead.percentile(.50));
+    m[@"schedulerSubmissionDeadlineLeadP95Ms"] = @(submissionDeadlineLead.percentile(.95));
+    m[@"schedulerSubmissionDeadlineSlackP05Ms"] = @(submissionDeadlineSlack.percentile(.05));
+    m[@"schedulerSubmissionDeadlineSlackP50Ms"] = @(submissionDeadlineSlack.percentile(.50));
     m[@"schedulerDrawnSamples"] = @(callbackTotal.size());
     m[@"schedulerCallbackSamples"] = @(callbackLockWait.size());
     m[@"schedulerSubmitSamples"] = @(submitMutation.size());

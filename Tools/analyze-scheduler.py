@@ -47,6 +47,13 @@ def analyze(path, warmup):
     for label, key in sorted(CPU, key=lambda x: float(last.get(x[1], -1)), reverse=True):
         if key in last:
             print(f"  {float(last[key]):8.4f}  {label}")
+    print("Display-link scheduling contract (ms):")
+    for key in ("callbackLeadP50Ms", "schedulerSubmissionDeadlineLeadP05Ms",
+                "schedulerSubmissionDeadlineLeadP50Ms",
+                "schedulerSubmissionDeadlineSlackP05Ms",
+                "schedulerSubmissionDeadlineSlackP50Ms"):
+        if key in last:
+            print(f"  {key}: {float(last[key]):.3f}")
     print("Scheduling/GPU waits (ms), NOT additive:")
     for label, key in sorted(WAIT, key=lambda x: float(last.get(x[1], -1)), reverse=True):
         if key in last:

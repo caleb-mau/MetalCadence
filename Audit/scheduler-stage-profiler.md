@@ -48,3 +48,16 @@ This is evidence that additional CPU scheduling micro-optimizations cannot
 solve the dominant delay. Next experiment: conservative pressure classification
 of benign single supersessions vs genuine multi-frame backlog/overflow. The
 new controller policy must pass both 60 Hz frame integrity and latency metrics.
+
+
+## Display submission deadline follow-up
+
+The first benchmark showed targetPresentationTimestamp was 49.9 ms in
+the future (roughly three 60 Hz periods), independent of CAMetalLayer drawable
+queue depth (two vs three tested). The next metrics measure
+targetTimestamp minus callback-entry time and targetTimestamp minus
+command-commit completion time, including their 5th-percentile remaining
+slack. These allow us to assess whether *late-latching* (selecting a newer
+frame closer to submission) can reduce unnecessary ready-to-selection waiting
+without violating the display-link deadline. Never interpret target timestamps
+as guaranteed hardware scanout or controller-to-photon time.
