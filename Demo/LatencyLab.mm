@@ -386,9 +386,20 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
                               withIntermediateDirectories:YES
                                                attributes:nil
                                                     error:nil];
-    self.logPath =
-        [dir stringByAppendingPathComponent:[NSString stringWithFormat:@"latency-lab-%@.jsonl",
-                                                                       NSUUID.UUID.UUIDString]];
+    NSString *runID = NSUUID.UUID.UUIDString;
+    for (NSString *arg in NSProcessInfo.processInfo.arguments) {
+        if ([arg hasPrefix:@"--run-id="]) {
+            NSString *candidate = [arg substringFromIndex:9];
+            NSCharacterSet *allowed = [NSCharacterSet
+                characterSetWithCharactersInString:
+                    @"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"];
+            if (candidate.length && candidate.length < 80 &&
+                [candidate rangeOfCharacterFromSet:allowed.invertedSet].location == NSNotFound)
+                runID = candidate;
+        }
+    }
+    self.logPath = [dir
+        stringByAppendingPathComponent:[NSString stringWithFormat:@"latency-lab-%@.jsonl", runID]];
     [@"" writeToFile:self.logPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
     NSLog(@"MC_LATENCY_LOG %@", self.logPath);
 
@@ -503,6 +514,8 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
     self.triggerButton.bezelStyle = NSBezelStyleRounded;
     self.triggerButton.keyEquivalent = @" ";
     self.triggerButton.enabled = !self.selfTest;
+    self.buffer.enabled = !self.selfTest;
+    self.quality.enabled = !self.selfTest;
     [root addSubview:self.triggerButton];
     [self.window makeKeyAndOrderFront:nil];
     [self resizeContent];
@@ -558,6 +571,8 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
     NSDictionary *right = [self.rightEngine metrics];
     NSDictionary *summary = @{
         @"kind" : @"summary",
+        @"launchArguments" : NSProcessInfo.processInfo.arguments,
+        @"rightMultiplier" : @(self.quality.indexOfSelectedItem == 1 ? 4 : 2),
         @"inputEvents" : @(self.inputIndex),
         @"sourceFrames" : @(self.sourceFrames),
         @"displayHz" : @(self.refreshRate),
