@@ -2,6 +2,7 @@
 #import <CoreVideo/CoreVideo.h>
 #import <QuartzCore/QuartzCore.h>
 #import "MetalCadence.h"
+#import "MCWindowCapture.h"
 #include <cmath>
 
 static const int LabWidth = 1280;
@@ -30,8 +31,11 @@ static const int LabHeight = 720;
 @property NSTextField *heading, *subtitle, *leftTitle, *rightTitle, *leftNumbers, *rightNumbers;
 @property NSTextField *status, *instructions, *footnote;
 @property NSPopUpButton *quality, *buffer;
-@property NSButton *triggerButton, *guardSwitch;
+@property NSButton *triggerButton, *guardSwitch, *sourceButton;
 @property NSTimer *sourceTimer, *metricsTimer;
+@property MCWindowCapture *windowCapture;
+@property (atomic) BOOL captureMode;
+@property NSString *captureStatus;
 @property CVPixelBufferPoolRef sourcePool;
 @property NSMutableArray<MCLabInputEvent *> *events;
 @property NSString *logPath;
@@ -172,7 +176,7 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
     c.outputWidth = LabWidth;
     c.outputHeight = LabHeight;
     c.audioEnabled = NO;
-    c.duplicateDetection = NO;
+    c.duplicateDetection = self.captureMode;
     c.suppressAbruptInterpolation = enhanced && self.guardSwitch.state == NSControlStateValueOn;
     c.presentation = MCVideoPresentationEnhanced;
     c.maxConcurrentGPUBatches = 2;
@@ -253,6 +257,8 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
 }
 - (void)sourceTick:(NSTimer *)timer {
     (void)timer;
+    if (self.captureMode)
+        return;
     if (!self.leftEngine.running || !self.rightEngine.running)
         return;
     CVPixelBufferRef frame = NULL;
@@ -278,6 +284,64 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
         [self.events removeObjectAtIndex:0];
     self.flipped = !self.flipped;
 }
+- (void)restartForCaptureMode {
+    [self.leftEngine stop];
+    [self.rightEngine stop];
+    self.leftEngine.onFreshFramePresented = nil;
+    self.rightEngine.onFreshFramePresented = nil;
+    self.leftEngine = nil;
+    self.rightEngine = nil;
+    self.previousLeftFrames = 0;
+    self.previousRightFrames = 0;
+    self.lastReportAt = 0;
+    [self startEngine:NO];
+    [self startEngine:YES];
+}
+- (void)toggleGreenlight:(id)sender {
+    (void)sender;
+    if (self.captureMode) {
+        self.captureMode = NO;
+        [self.windowCapture stop];
+        self.captureStatus = @"Synthetic source";
+        self.sourceButton.title = @"Connect Greenlight";
+        [self restartForCaptureMode];
+        return;
+    }
+    self.captureMode = YES;
+    self.captureStatus = @"Connecting to Greenlight…";
+    self.sourceButton.title = @"Use synthetic";
+    [self restartForCaptureMode];
+    NSString *bundleID = @"com.unknownskl.greenlight";
+    NSString *windowTitle = @"";
+    for (NSString *arg in NSProcessInfo.processInfo.arguments) {
+        if ([arg hasPrefix:@"--window-bundle="])
+            bundleID = [arg substringFromIndex:16];
+        else if ([arg hasPrefix:@"--window-title="])
+            windowTitle = [arg substringFromIndex:15];
+    }
+    __weak MCLatencyLab *weakSelf = self;
+    [self.windowCapture startWithBundleIdentifier:bundleID
+        titleContains:windowTitle
+        frameWidth:LabWidth
+        frameHeight:LabHeight
+        onFrame:^(CVPixelBufferRef frame, double arrival) {
+            MCLatencyLab *lab = weakSelf;
+            if (!lab || !lab.captureMode)
+                return;
+            BOOL raw = [lab.leftEngine submitVideo:frame hostTime:arrival];
+            BOOL generated = [lab.rightEngine submitVideo:frame hostTime:arrival];
+            if (raw || generated)
+                lab.sourceFrames++;
+        }
+        onStatus:^(NSString *message, NSError *error) {
+            MCLatencyLab *lab = weakSelf;
+            if (!lab || !lab.captureMode)
+                return;
+            lab.captureStatus =
+                error ? [NSString stringWithFormat:@"%@: %@", message, error.localizedDescription]
+                      : message;
+        }];
+}
 - (void)triggerButtonPressed:(id)sender {
     (void)sender;
     if (!self.selfTest)
@@ -300,6 +364,18 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
     }
     self.lastReportAt = now;
 
+    if (self.captureMode) {
+        self.instructions.stringValue = [NSString
+            stringWithFormat:@"Greenlight: %@ · %lu captured · %lu idle · %lu format mismatches. "
+                             @"Control GTA V in Greenlight.",
+                             self.captureStatus ?: @"Connecting",
+                             (unsigned long)self.windowCapture.deliveredFrames,
+                             (unsigned long)self.windowCapture.idleFrames,
+                             (unsigned long)self.windowCapture.formatMismatches];
+    } else {
+        self.instructions.stringValue = @"SPACE / arrow keys = abrupt target movement. "
+                                        @"The moving scanning bar reveals motion smoothness.";
+    }
     self.leftNumbers.stringValue =
         [NSString stringWithFormat:@"%.1f fresh fps    •    source → present P50 %.0f ms"
                                    @"    •    buffer %.0f ms",
@@ -328,17 +404,19 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
             enhanced,
             difference];
 
+    self.leftTitle.stringValue =
+        self.captureMode ? @"GREENLIGHT / ORIGINAL STREAM" : @"30 FPS  •  ORIGINAL / DIRECT";
     self.rightTitle.stringValue =
         [NSString stringWithFormat:@"%@ FPS  •  GENERATED / VIDEO TOOLBOX",
                                    self.quality.indexOfSelectedItem == 1 ? @"120" : @"60"];
     self.footnote.stringValue = [NSString
-        stringWithFormat:
-            @"Software drawable-present timestamps, not physical photons. Display %.0f Hz. "
-            @"Both engines share the identical 30 FPS source. %@",
-            self.refreshRate,
-            self.refreshRate < 120 && self.quality.indexOfSelectedItem == 1
-                ? @"120 FPS cannot be displayed on this screen."
-                : @"P50 is a rolling frame metric, not controller-to-photon."];
+        stringWithFormat:@"Software drawable-present only; excludes Xbox network/decode latency. "
+                         @"Display %.0f Hz. "
+                         @"Both engines share the identical 30 FPS source. %@",
+                         self.refreshRate,
+                         self.refreshRate < 120 && self.quality.indexOfSelectedItem == 1
+                             ? @"120 FPS cannot be displayed on this screen."
+                             : @"P50 is a rolling frame metric, not controller-to-photon."];
 }
 - (void)resizeContent {
     if (!self.window)
@@ -365,6 +443,7 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
     self.buffer.frame = NSMakeRect(227, 89, 205, 30);
     self.triggerButton.frame = NSMakeRect(447, 85, 180, 38);
     self.guardSwitch.frame = NSMakeRect(640, 87, 240, 35);
+    self.sourceButton.frame = NSMakeRect(920, 85, 175, 38);
     self.footnote.frame = NSMakeRect(24, 23, w - 48, 30);
 }
 - (void)windowDidResize:(NSNotification *)notification {
@@ -384,6 +463,8 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
     (void)notification;
     self.events = [NSMutableArray array];
+    self.windowCapture = [MCWindowCapture new];
+    self.captureStatus = @"Synthetic source";
     self.refreshRate = MAX(30, NSScreen.mainScreen.maximumFramesPerSecond ?: 60);
     self.selfTest = [NSProcessInfo.processInfo.arguments containsObject:@"--self-test"];
     NSString *dir = [NSHomeDirectory()
@@ -536,6 +617,12 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
     self.buffer.enabled = !self.selfTest;
     self.quality.enabled = !self.selfTest;
     [root addSubview:self.triggerButton];
+    self.sourceButton = [NSButton buttonWithTitle:@"Connect Greenlight"
+                                           target:self
+                                           action:@selector(toggleGreenlight:)];
+    self.sourceButton.bezelStyle = NSBezelStyleRounded;
+    self.sourceButton.enabled = !self.selfTest;
+    [root addSubview:self.sourceButton];
     [self.window makeKeyAndOrderFront:nil];
     [self resizeContent];
 
@@ -566,6 +653,9 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
                                                        userInfo:nil
                                                         repeats:YES];
     [NSApp activateIgnoringOtherApps:YES];
+    if ([NSProcessInfo.processInfo.arguments containsObject:@"--source=greenlight"] &&
+        !self.selfTest)
+        [self toggleGreenlight:nil];
 
     if (self.selfTest) {
         for (NSInteger index = 0; index < 6; ++index) {
@@ -601,6 +691,11 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
         @"rightDisplayCallbacks" : right[@"callbacks"] ?: @0,
         @"rightHeldRefreshes" : right[@"heldRefreshes"] ?: @0,
         @"inputEvents" : @(self.inputIndex),
+        @"sourceMode" : self.captureMode ? @"greenlight" : @"synthetic",
+        @"windowCaptureSamples" : @(self.windowCapture.deliveredFrames),
+        @"windowCaptureIdle" : @(self.windowCapture.idleFrames),
+        @"windowCaptureFormatMismatches" : @(self.windowCapture.formatMismatches),
+        @"windowCaptureFailures" : @(self.windowCapture.incompleteFrames),
         @"sourceFrames" : @(self.sourceFrames),
         @"displayHz" : @(self.refreshRate),
         @"bufferMode" : self.buffer.titleOfSelectedItem ?: @"unknown",
@@ -631,6 +726,8 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
     }
     [self.sourceTimer invalidate];
     [self.metricsTimer invalidate];
+    self.captureMode = NO;
+    [self.windowCapture stop];
     self.leftEngine.onFreshFramePresented = nil;
     self.rightEngine.onFreshFramePresented = nil;
     [self.leftEngine stop];
