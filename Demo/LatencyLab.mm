@@ -322,7 +322,7 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
         [self.clipSource stop];
         self.clipStatus = @"Synthetic source";
         self.clipButton.title = @"Play 720p video";
-        [self restartForCaptureMode];
+        // The synthetic timer can resume without stopping the GPU engines.
         return;
     }
     if (self.captureMode) {
@@ -345,12 +345,11 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
             return;
         url = picker.URL;
     }
-    if (self.resolution.indexOfSelectedItem == 0)
-        [self.resolution selectItemAtIndex:2];
+    // The MetalFX output is selected before engine initialization. Switching
+    // video producers must not synchronously tear down GPU presentation.
     self.clipMode = YES;
     self.clipStatus = @"Decoding local 720p video…";
     self.clipButton.title = @"Use synthetic";
-    [self restartForCaptureMode];
     __weak MCLatencyLab *weakSelf = self;
     [self.clipSource startURL:url
         onFrame:^(CVPixelBufferRef buffer, double arrival) {
@@ -713,6 +712,15 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
         else if ([argument isEqualToString:@"--output=1440"])
             [self.resolution selectItemAtIndex:2];
     }
+    // Normal interactive mode uses MetalFX 1440p; synthetic automated
+    // baselines retain 720p, and explicit --output always wins.
+    BOOL specifiedOutput = NO;
+    for (NSString *arg in NSProcessInfo.processInfo.arguments) {
+        if ([arg hasPrefix:@"--output="])
+            specifiedOutput = YES;
+    }
+    if (!specifiedOutput && !self.selfTest)
+        [self.resolution selectItemAtIndex:2];
     self.triggerButton = [NSButton buttonWithTitle:@"SWAP TARGET  ·  SPACE"
                                             target:self
                                             action:@selector(triggerButtonPressed:)];
