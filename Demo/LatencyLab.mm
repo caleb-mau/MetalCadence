@@ -312,7 +312,11 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
 }
 - (NSURL *)selectedClipURL {
     NSString *path = [NSHomeDirectory()
-        stringByAppendingPathComponent:@"Movies/MetalCadence Upscale Tests/source-720p.mp4"];
+        stringByAppendingPathComponent:@"Movies/MetalCadence GTA Tests/GTA-V-720p30.mp4"];
+    if (![[NSFileManager defaultManager] fileExistsAtPath:path]) {
+        path = [NSHomeDirectory()
+            stringByAppendingPathComponent:@"Movies/MetalCadence Upscale Tests/source-720p.mp4"];
+    }
     for (NSString *arg in NSProcessInfo.processInfo.arguments) {
         if ([arg hasPrefix:@"--clip-path="])
             path = [arg substringFromIndex:12];

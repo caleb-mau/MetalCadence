@@ -12,6 +12,7 @@ Build the native UI:
     ./build-latency-lab.sh
 
 Open the app and press "Play 720p video". The source defaults to
+~/Movies/MetalCadence GTA Tests/GTA-V-720p30.mp4 (if present), otherwise
 ~/Movies/MetalCadence Upscale Tests/source-720p.mp4 and, when missing,
 a local file chooser will accept a 720p30 MP4.
 
@@ -43,5 +44,6 @@ bounds; the enhanced engine still renders a 2560x1440 texture.
   on-screen frames.
 - CPU decode time, GPU time, source-to-present latency, frame pacing,
   and post-processing memory should be evaluated separately.
-- This adapter has not completed the full real-video runtime test while
-  the Mac agent is offline. Native compilation succeeded before disconnect.
+- The adapter has now completed the first full M5 gameplay-video runtime test.
+  Source->presentation includes intentional interpolation lookahead and
+  macOS scheduling, not Xbox controller-to-photon latency.

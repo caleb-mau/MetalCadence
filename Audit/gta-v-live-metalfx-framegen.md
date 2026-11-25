@@ -27,3 +27,16 @@ JSONL logs under ~/Library/Application Support/MetalCadence.
 
 Video only, without audio feedback loops. This measures additional Mac
 ingress-to-presentation delay, not Xbox controller-to-photon latency.
+
+
+## First verified 14.02s M5 run
+
+Actual 1280x720 GTA V footage decoded to 420v NV12, 419 decoded frames,
+418 submitted source frames, 812 enhanced presented, 414 original presented.
+Right output 2560x1440, 2x VideoToolbox, game-response mode OFF.
+Effective new output 57.91 presented frames/sec. Median GPU processing
+4.91ms, whole processing P95 15.54ms, source->presentation P50 105.19ms,
+P99 122.55ms, output gap P99 33.33ms. Zero GPU/VT or decoder format errors,
+and window was not occluded. This is a genuine live simultaneous pipeline
+rather than offline re-encoding. We should continue reducing occasional
+missed display refreshes and buffer-induced latency.
