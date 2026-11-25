@@ -61,3 +61,19 @@ slack. These allow us to assess whether *late-latching* (selecting a newer
 frame closer to submission) can reduce unnecessary ready-to-selection waiting
 without violating the display-link deadline. Never interpret target timestamps
 as guaranteed hardware scanout or controller-to-photon time.
+
+### Measured M5 60 Hz deadline slack, 2026-11-25
+
+Seeded 1080p/30 unique fps to 1440p/2x replay, fresh 59.14 FPS:
+- callback-to-target-present P50: 49.877 ms
+- callback-to-required-submit-deadline P05: 16.345 ms; P50: 16.543 ms
+- remaining submission slack after GPU command commit P05: 15.999 ms;
+  P50: 16.359 ms
+- CPU draw callback P95: 0.323 ms; source-to-present P50: 125.36 ms
+- 0 GPU errors, 0 interpolation errors, 0 deadline misses.
+
+The hardware API requires presentation submission before targetTimestamp,
+not before targetPresentationTimestamp. A safe experimental late-latch delay
+of ~8 ms leaves about 8 ms submission margin in this specific 60Hz test.
+This does NOT guarantee the same deadline slack at 120/165 Hz or under
+thermal, fullscreen, external display, or UI contention.
