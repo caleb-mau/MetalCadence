@@ -47,6 +47,8 @@ static const int LabHeight = 720;
 
 @implementation MCLabWindow
 - (void)keyDown:(NSEvent *)event {
+    if (self.lab.selfTest)
+        return;
     if (event.keyCode == 49 || event.keyCode == 123 || event.keyCode == 124 ||
         event.keyCode == 125 || event.keyCode == 126) {
         [self.lab triggerAction];
@@ -189,7 +191,7 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
         c.playoutDelay = .030;
         c.minimumDelay = .006;
         c.maximumDelay = .090;
-        c.preferFreshestFrame = YES;
+        c.preferFreshestFrame = NO;
         break;
     case 2: // Fixed low buffer for experimental comparisons.
         c.playoutDelay = c.minimumDelay = c.maximumDelay = .055;
@@ -275,7 +277,8 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
 }
 - (void)triggerButtonPressed:(id)sender {
     (void)sender;
-    [self triggerAction];
+    if (!self.selfTest)
+        [self triggerAction];
 }
 - (void)report:(NSTimer *)timer {
     (void)timer;
@@ -499,6 +502,7 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
                                             action:@selector(triggerButtonPressed:)];
     self.triggerButton.bezelStyle = NSBezelStyleRounded;
     self.triggerButton.keyEquivalent = @" ";
+    self.triggerButton.enabled = !self.selfTest;
     [root addSubview:self.triggerButton];
     [self.window makeKeyAndOrderFront:nil];
     [self resizeContent];
