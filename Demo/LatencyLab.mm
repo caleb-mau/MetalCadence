@@ -30,7 +30,7 @@ static const int LabHeight = 720;
 @property MCVideoEngine *leftEngine, *rightEngine;
 @property NSTextField *heading, *subtitle, *leftTitle, *rightTitle, *leftNumbers, *rightNumbers;
 @property NSTextField *status, *instructions, *footnote;
-@property NSPopUpButton *quality, *buffer;
+@property NSPopUpButton *quality, *buffer, *resolution;
 @property NSButton *triggerButton, *guardSwitch, *sourceButton;
 @property NSTimer *sourceTimer, *metricsTimer;
 @property MCWindowCapture *windowCapture;
@@ -173,14 +173,17 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
     MCVideoConfiguration *c = [MCVideoConfiguration new];
     c.inputWidth = LabWidth;
     c.inputHeight = LabHeight;
-    c.outputWidth = LabWidth;
-    c.outputHeight = LabHeight;
+    // Only the enhanced path is spatially upscaled. The left side is always
+    // a genuine 1280x720 reference, even when MetalFX outputs 2560x1440.
+    NSInteger size = self.resolution.indexOfSelectedItem;
+    c.outputWidth = enhanced ? (size == 2 ? 2560 : size == 1 ? 1920 : LabWidth) : LabWidth;
+    c.outputHeight = enhanced ? (size == 2 ? 1440 : size == 1 ? 1080 : LabHeight) : LabHeight;
     c.audioEnabled = NO;
     c.duplicateDetection = self.captureMode;
     c.suppressAbruptInterpolation = enhanced && self.guardSwitch.state == NSControlStateValueOn;
     c.presentation = MCVideoPresentationEnhanced;
     c.maxConcurrentGPUBatches = 2;
-    c.gpuTextureBudgetMiB = 256;
+    c.gpuTextureBudgetMiB = enhanced && size == 2 ? 512 : 256;
     c.multiplier = enhanced ? (self.quality.indexOfSelectedItem == 1 ? 4 : 2) : 1;
     c.skipRedundantPresentations = NO;
     c.adaptiveMultiplier = enhanced && c.multiplier == 4;
@@ -383,11 +386,12 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
                                    [left[@"sourceToPresentP50Ms"] doubleValue],
                                    [left[@"playoutDelayMs"] doubleValue]];
     self.rightNumbers.stringValue =
-        [NSString stringWithFormat:@"%.1f fresh fps    •    source → present P50 %.0f ms"
-                                   @"    •    buffer %.0f ms",
+        [NSString stringWithFormat:@"%.1f fresh fps · processing P95 %.1f ms · GPU %.1f ms "
+                                   @"· memory %.0f MiB",
                                    self.rightFPS,
-                                   [right[@"sourceToPresentP50Ms"] doubleValue],
-                                   [right[@"playoutDelayMs"] doubleValue]];
+                                   [right[@"processingP95Ms"] doubleValue],
+                                   [right[@"scaleGPUMedianMs"] doubleValue],
+                                   [right[@"memoryMiB"] doubleValue]];
     NSString *reference =
         self.lastLeftTime > 0 ? [NSString stringWithFormat:@"%.0f", self.lastLeftTime] : @"—";
     NSString *enhanced =
@@ -406,9 +410,13 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
 
     self.leftTitle.stringValue =
         self.captureMode ? @"GREENLIGHT / ORIGINAL STREAM" : @"30 FPS  •  ORIGINAL / DIRECT";
+    NSString *resolution = @[ @"720p", @"1080p", @"1440p" ][self.resolution.indexOfSelectedItem];
     self.rightTitle.stringValue =
-        [NSString stringWithFormat:@"%@ FPS  •  GENERATED / VIDEO TOOLBOX",
-                                   self.quality.indexOfSelectedItem == 1 ? @"120" : @"60"];
+        [NSString stringWithFormat:@"%@ · %@ FPS  •  %@ / VIDEO TOOLBOX",
+                                   resolution,
+                                   self.quality.indexOfSelectedItem == 1 ? @"120" : @"60",
+                                   self.resolution.indexOfSelectedItem > 0 ? @"MetalFX + framegen"
+                                                                           : @"framegen"];
     self.footnote.stringValue = [NSString
         stringWithFormat:@"Software drawable-present only; excludes Xbox network/decode latency. "
                          @"Display %.0f Hz. "
@@ -442,8 +450,9 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
     self.quality.frame = NSMakeRect(24, 89, 190, 30);
     self.buffer.frame = NSMakeRect(227, 89, 205, 30);
     self.triggerButton.frame = NSMakeRect(447, 85, 180, 38);
-    self.guardSwitch.frame = NSMakeRect(640, 87, 240, 35);
-    self.sourceButton.frame = NSMakeRect(920, 85, 175, 38);
+    self.guardSwitch.frame = NSMakeRect(635, 87, 222, 35);
+    self.resolution.frame = NSMakeRect(856, 87, 165, 35);
+    self.sourceButton.frame = NSMakeRect(1025, 85, 180, 38);
     self.footnote.frame = NSMakeRect(24, 23, w - 48, 30);
 }
 - (void)windowDidResize:(NSNotification *)notification {
@@ -501,7 +510,7 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
         self.window.level = NSFloatingWindowLevel;
         self.window.collectionBehavior = NSWindowCollectionBehaviorCanJoinAllSpaces;
     }
-    self.window.minSize = NSMakeSize(1090, 660);
+    self.window.minSize = NSMakeSize(1230, 660);
     self.window.appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
     self.window.delegate = self;
     self.window.lab = self;
@@ -586,6 +595,12 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
     self.buffer.target = self;
     self.buffer.action = @selector(reconfigure:);
     [root addSubview:self.buffer];
+    self.resolution = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+    [self.resolution
+        addItemsWithTitles:@[ @"720p · no upscale", @"1080p · MetalFX", @"1440p · MetalFX" ]];
+    self.resolution.target = self;
+    self.resolution.action = @selector(reconfigure:);
+    [root addSubview:self.resolution];
 
     for (NSString *argument in NSProcessInfo.processInfo.arguments) {
         if ([argument isEqualToString:@"--right-mode=fast"])
@@ -598,6 +613,10 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
             [self.buffer selectItemAtIndex:4];
         else if ([argument isEqualToString:@"--factor=4"])
             [self.quality selectItemAtIndex:1];
+        else if ([argument isEqualToString:@"--output=1080"])
+            [self.resolution selectItemAtIndex:1];
+        else if ([argument isEqualToString:@"--output=1440"])
+            [self.resolution selectItemAtIndex:2];
     }
     self.triggerButton = [NSButton buttonWithTitle:@"SWAP TARGET  ·  SPACE"
                                             target:self
@@ -616,6 +635,7 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
     self.triggerButton.enabled = !self.selfTest;
     self.buffer.enabled = !self.selfTest;
     self.quality.enabled = !self.selfTest;
+    self.resolution.enabled = !self.selfTest;
     [root addSubview:self.triggerButton];
     self.sourceButton = [NSButton buttonWithTitle:@"Connect Greenlight"
                                            target:self
@@ -683,6 +703,14 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
         @"kind" : @"summary",
         @"launchArguments" : NSProcessInfo.processInfo.arguments,
         @"rightMultiplier" : @(self.quality.indexOfSelectedItem == 1 ? 4 : 2),
+        @"rightOutputWidth" : @(self.resolution.indexOfSelectedItem == 2   ? 2560
+                                : self.resolution.indexOfSelectedItem == 1 ? 1920
+                                                                           : 1280),
+        @"rightOutputHeight" : @(self.resolution.indexOfSelectedItem == 2   ? 1440
+                                 : self.resolution.indexOfSelectedItem == 1 ? 1080
+                                                                            : 720),
+        @"rightGPUMedianMs" : right[@"scaleGPUMedianMs"] ?: @0,
+        @"rightMemoryMiB" : right[@"memoryMiB"] ?: @0,
         @"runtimeSeconds" : @(MAX(.001, CACurrentMediaTime() - self.startedAt)),
         @"windowOccluded" : @((self.window.occlusionState & NSWindowOcclusionStateVisible) == 0),
         @"occludedReportSamples" : @(self.occludedReportSamples),
