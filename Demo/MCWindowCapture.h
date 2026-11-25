@@ -3,6 +3,8 @@
 
 // Video-only ScreenCaptureKit window adapter, intentionally independent of
 // Xbox authentication or Greenlight's streaming implementation.
+NS_ASSUME_NONNULL_BEGIN
+
 typedef void (^MCWindowFrameHandler)(CVPixelBufferRef buffer, double hostArrivalTime);
 typedef void (^MCWindowStatusHandler)(NSString *message, NSError *_Nullable error);
 
@@ -22,3 +24,5 @@ typedef void (^MCWindowStatusHandler)(NSString *message, NSError *_Nullable erro
                          onStatus:(MCWindowStatusHandler)onStatus;
 - (void)stop;
 @end
+
+NS_ASSUME_NONNULL_END
