@@ -37,6 +37,17 @@ API_AVAILABLE(macos(26.0))
 @property BOOL adaptiveLatency, duplicateDetection, audioEnabled;
 @property double playoutDelay, minimumDelay, maximumDelay;
 @property MCVideoPresentation presentation;
+/// Opt in to skipping older due frames when three or more are backlogged.
+/// Defaults to smooth selection; lowest-latency profiles enable this.
+@property BOOL preferFreshestFrame;
+/// Opt-in high-priority display-link run loop, separate from AppKit main run loop.
+@property BOOL dedicatedPresentationThread;
+/// Opt-in: skip redundant GPU redraws when the displayed frame is unchanged.
+@property BOOL skipRedundantPresentations;
+/// Optional partial held-frame redraw interval. 1 retains existing behavior.
+@property NSUInteger heldRefreshDrawEvery;
+/// Frame selection lateness window expressed in display refreshes.
+@property double presentationLatenessRefreshes;
 @property (nonatomic, copy, nullable) MCWorkloadProfile *profile;
 + (instancetype)configurationWithProfile:(MCWorkloadProfile *)profile NS_SWIFT_NAME(make(profile:));
 @end

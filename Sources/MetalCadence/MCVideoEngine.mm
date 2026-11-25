@@ -39,6 +39,11 @@ static NSError *MCError(NSString *message) {
         _minimumDelay = .012;
         _maximumDelay = .125;
         _presentation = MCVideoPresentationEnhanced;
+        _preferFreshestFrame = NO;
+        _dedicatedPresentationThread = NO;
+        _skipRedundantPresentations = NO;
+        _heldRefreshDrawEvery = 1;
+        _presentationLatenessRefreshes = 1.5;
     }
     return self;
 }
@@ -63,6 +68,11 @@ static NSError *MCError(NSString *message) {
     c.minimumDelay = _minimumDelay;
     c.maximumDelay = _maximumDelay;
     c.presentation = _presentation;
+    c.preferFreshestFrame = _preferFreshestFrame;
+    c.dedicatedPresentationThread = _dedicatedPresentationThread;
+    c.skipRedundantPresentations = _skipRedundantPresentations;
+    c.heldRefreshDrawEvery = _heldRefreshDrawEvery;
+    c.presentationLatenessRefreshes = _presentationLatenessRefreshes;
     c.profile = [_profile copy];
     return c;
 }
@@ -70,6 +80,7 @@ static NSError *MCError(NSString *message) {
     MCWorkloadPlan *plan = [[MCWorkloadPlan alloc] initWithProfile:profile];
     MCVideoConfiguration *c = [self new];
     c.profile = [profile copy];
+    c.preferFreshestFrame = profile.policy == MCFramePolicyLowestLatency;
     c.multiplier = plan.multiplier;
     c.adaptiveMultiplier = plan.multiplier == 4 && profile.policy == MCFramePolicyMaximumThroughput;
     c.minimumDelay = plan.minimumDelay;
@@ -503,6 +514,17 @@ static MCPipelineBundle *MCProductionPipelines(id<MTLDevice> device,
                    [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
                    [enc endEncoding];
                }];
+    _scheduler.useDedicatedRenderThread = c.dedicatedPresentationThread;
+    _scheduler.skipHeldDraws = c.skipRedundantPresentations;
+    _scheduler.heldRefreshDrawEvery = c.heldRefreshDrawEvery;
+    _scheduler.latenessRefreshAllowance = c.presentationLatenessRefreshes;
+    if (c.preferFreshestFrame) {
+        _scheduler.selectionMode = MCFrameSelectionInteractive;
+        _scheduler.maximumPendingFrames = 8;
+    } else {
+        _scheduler.selectionMode = MCFrameSelectionSmooth;
+        _scheduler.maximumPendingFrames = 12;
+    }
     return self;
 }
 - (MCVideoConfiguration *)configuration {
@@ -1189,7 +1211,8 @@ static void MCInitializeColorRangeLUT(void) {
                                   refreshPeriod:self.refreshPeriod
                                  outputInterval:phaseTime
                                    queuedFrames:[pressure[@"queued"] unsignedIntegerValue]
-                                totalSuperseded:[pressure[@"superseded"] unsignedLongLongValue]
+                                totalSuperseded:[pressure[@"reactiveSuperseded"]
+                                                    unsignedLongLongValue]
                                   totalOverflow:[pressure[@"overflow"] unsignedLongLongValue]];
                             self.currentPlayoutDelay = delay;
                             NSDictionary *estimate = [self.latencyController metrics];

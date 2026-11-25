@@ -220,3 +220,37 @@ The same-refresh baseline shows similar fresh FPS and processing latency,
 a lower observed process footprint and fewer output allocations, but worse
 presentation-gap P99. Software presentation timestamps are not
 controller-to-photon latency. The SDK remains experimental.
+
+### Presentation Pipeline V2 (experimental)
+
+The C++20 presentation engine adds fixed-capacity, allocation-free timing
+histograms for GPU-ready-to-display selection, CPU encode, GPU queue wait,
+callback timing and presentation target errors. It also exposes optional
+interactive newest-due selection, a dedicated high-priority display run loop,
+partial held-frame redraw and refresh-dependent lateness controls.
+
+By default the SDK preserves the previously validated smooth frame selection,
+main-thread display link, held-frame redraw and 1.5-refresh lateness window.
+Additional public `MCVideoConfiguration` properties are:
+
+```objc
+config.preferFreshestFrame = NO;
+config.dedicatedPresentationThread = NO;
+config.skipRedundantPresentations = NO;
+config.heldRefreshDrawEvery = 1;
+config.presentationLatenessRefreshes = 1.5;
+```
+
+The reference app accepts opt-in test flags `--freshest`,
+`--dedicated-display`, `--skip-held`, `--held-redraw-every=2`,
+`--late-refreshes=2.0`, `--refresh-hz=120` and
+`--benchmark-screen=slowest` (for a physical low-refresh connected screen).
+`--refresh-hz` requests a callback frequency but does not change the
+monitor's physical refresh mode.
+
+The [Presentation V2 audit](Audit/presentation-v2-report.md) records
+before/after results, failed configurations, remaining hardware limitations
+and reproducible commands. The [verified results](Audit/verified-presentation-v2.json)
+are generated from isolated local sessions. The default P99 latency target
+has **not** been met. Do not assume a requested 120 Hz rate was physically
+delivered without checking the observed callback and monitor refresh metrics.

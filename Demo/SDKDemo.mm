@@ -55,6 +55,32 @@
     if (mult > 0)
         c.multiplier = mult;
     c.presentation = (MCVideoPresentation)self.mode.indexOfSelectedItem;
+    for (NSString *argument in NSProcessInfo.processInfo.arguments) {
+        if ([argument hasPrefix:@"--late-refreshes="]) {
+            c.presentationLatenessRefreshes = [[argument substringFromIndex:17] doubleValue];
+        }
+        if ([argument hasPrefix:@"--held-redraw-every="]) {
+            c.heldRefreshDrawEvery = MAX(1, [[argument substringFromIndex:20] integerValue]);
+        }
+    }
+    if ([NSProcessInfo.processInfo.arguments containsObject:@"--skip-held"]) {
+        c.skipRedundantPresentations = YES;
+    }
+    if ([NSProcessInfo.processInfo.arguments containsObject:@"--draw-held"]) {
+        c.skipRedundantPresentations = NO;
+    }
+    if ([NSProcessInfo.processInfo.arguments containsObject:@"--dedicated-display"]) {
+        c.dedicatedPresentationThread = YES;
+    }
+    if ([NSProcessInfo.processInfo.arguments containsObject:@"--main-display"]) {
+        c.dedicatedPresentationThread = NO;
+    }
+    if ([NSProcessInfo.processInfo.arguments containsObject:@"--freshest"]) {
+        c.preferFreshestFrame = YES;
+    }
+    if ([NSProcessInfo.processInfo.arguments containsObject:@"--smooth"]) {
+        c.preferFreshestFrame = NO;
+    }
     c.interpolationBackend = ([NSProcessInfo.processInfo.arguments containsObject:@"--blend"]
                                   ? MCInterpolationBackendLinearBlend
                                   : (MCInterpolationBackend)self.interpolation.indexOfSelectedItem);
@@ -515,14 +541,20 @@
     // A 60 Hz secondary monitor cannot produce a fair 165 Hz benchmark.
     // Move only the automated benchmark, without modifying display modes.
     if (benchmark && !uiStress) {
-        NSScreen *fastest = nil;
+        BOOL chooseSlowest =
+            [NSProcessInfo.processInfo.arguments containsObject:@"--benchmark-screen=slowest"];
+        NSScreen *selectedScreen = nil;
         for (NSScreen *screen in NSScreen.screens) {
-            if (!fastest || screen.maximumFramesPerSecond > fastest.maximumFramesPerSecond) {
-                fastest = screen;
+            if (!selectedScreen ||
+                (chooseSlowest &&
+                 screen.maximumFramesPerSecond < selectedScreen.maximumFramesPerSecond) ||
+                (!chooseSlowest &&
+                 screen.maximumFramesPerSecond > selectedScreen.maximumFramesPerSecond)) {
+                selectedScreen = screen;
             }
         }
-        if (fastest) {
-            NSRect visible = fastest.visibleFrame;
+        if (selectedScreen) {
+            NSRect visible = selectedScreen.visibleFrame;
             CGFloat width = MIN(1300.0, visible.size.width - 40.0);
             CGFloat height = MIN(780.0, visible.size.height - 40.0);
             NSRect placement = NSMakeRect(
