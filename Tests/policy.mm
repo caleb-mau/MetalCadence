@@ -6,7 +6,7 @@ int main() {
         assert(MCSelectDueFrame(a, 0, 1.0, .025) == -1);
         assert(MCSelectDueFrame(a, 3, .98, .025) == -1);
         assert(MCSelectDueFrame(a, 3, 1.017, .025) == 0);
-        assert(MCSelectDueFrame(a, 3, 1.031, .025) == 1);
+        assert(MCSelectDueFrame(a, 3, 1.031, .025) == 0);
         assert(MCSelectDueFrame(a, 3, 1.100, .025) == 2);
         assert(MCSelectDueFrameWithMode(a, 3, 1.040, .025, MCFrameSelectionSmooth) == 1);
         assert(MCSelectDueFrameWithMode(a, 3, 1.040, .025, MCFrameSelectionInteractive) == 2);

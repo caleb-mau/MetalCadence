@@ -1,6 +1,6 @@
 #pragma once
 
-#include <cmath>
+#include <algorithm>\n#include <cmath>
 #include <cstddef>
 #include <cstdint>
 
@@ -53,6 +53,18 @@ inline DueDecision selectDueBy(TimestampAt timestampAt,
 
     if (lastDue < 0) {
         return {};
+    }
+
+    // In smooth mode, a two-frame catch-up does not prove overload. Processing
+    // 30->60 in pairs naturally makes both frames ready together. Preserve the
+    // older one if its age is still within a bounded recovery window, so the
+    // second frame can fill the following refresh instead of being discarded.
+    // Never retain a very stale pair after a transport stall.
+    if (mode == DeadlineMode::Smooth && lastDue == 1) {
+        const double oldest = timestampAt(0);
+        const double catchupLimit = std::max(.05, lateTolerance * 3.0);
+        if (std::isfinite(oldest) && displayDeadline - oldest <= catchupLimit)
+            return {0, 0};
     }
 
     // Normal 165Hz display jitter can make two 60fps frames due together.

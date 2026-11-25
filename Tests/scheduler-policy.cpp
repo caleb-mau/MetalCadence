@@ -27,6 +27,10 @@ int main() {
     }
     assert(selectDueBy(at, pts.size(), 1.018, .025, DeadlineMode::Interactive).index == 0);
     assert(selectDueBy(at, pts.size(), 1.04, .025, DeadlineMode::Interactive).index == 2);
+    const double overduePair[] = {1.0, 1.0166667};
+    assert(selectDue(overduePair, 2, 1.06, .025, DeadlineMode::Smooth).index == 0);
+    assert(selectDue(overduePair, 2, 1.06, .025, DeadlineMode::Interactive).index == 1);
+    assert(selectDue(overduePair, 2, 1.16, .025, DeadlineMode::Smooth).index == 1);
     assert(selectDue(nullptr, 4, 1.04, .025, DeadlineMode::Smooth).index == -1);
     std::puts("Scheduler policy: overdue and selection checks passed");
 }
