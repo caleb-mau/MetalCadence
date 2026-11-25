@@ -46,3 +46,21 @@ To validate looping, run the GTA clip test with
 --clip-test-seconds=28. The source clip is 20 seconds long, so the
 summary should report clipLoops>=1 and at least 760 decoded frames.
 This is useful for catching AVAssetReader end-of-file and resource leaks.
+
+## Sustained 28.02-second M5 run, including loop
+
+The actual GTA V 720p30 sample was played beyond its 20-second duration,
+forcing an AVAssetReader restart:
+
+- 839 successfully decoded NV12 frames, 839 source frames submitted
+- 1 source loop, 0 rejected source frames
+- 835 720p original frames presented
+- 1,647 1440p enhanced frames presented, 58.77 FPS
+- MetalFX spatial scale AND VideoToolbox 2x frame generation simultaneously
+- Processing P95 16.17ms, Metal GPU time median 5.40ms
+- Source-to-presentation P50 109.87ms, P99 110.86ms
+- Presentation gap P99 16.667ms
+- Zero GPU and VideoToolbox errors, no occlusion
+
+This is evidence of real-time throughput, not proof of satisfactory
+controller-to-photon delay or artifact-free fast camera panning.

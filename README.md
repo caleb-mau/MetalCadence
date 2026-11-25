@@ -334,3 +334,19 @@ including synchronization, not controller-to-photon latency.
 A freely reusable 1280×720 sample clip is available from
 https://samplelib.com/sample-videos.html (sample-5s-720p.mp4; permissive
 https://samplelib.com/license.html).
+
+## Live GTA V test: 720p NV12 to 1440p and 60 FPS
+
+Run GTA V 720p30 footage through two simultaneous live GPU effects:
+MetalFX spatial upscaling to 2560x1440 and VideoToolbox frame interpolation
+to about 60 FPS. The left view presents the original 720p feed.
+The enhanced view displays the 1440p generated output in the latency lab.
+
+The Mac's M5 completed a 28-second test with 839 real decoded NV12 frames
+and 1,647 enhanced displayed frames (58.77 displayed FPS), 0 GPU or
+interpolation errors, and 16.67ms output-gap P99.
+
+See Audit/gta-v-live-metalfx-framegen.md for the input source,
+license, flags and measured timing. In the latency lab choose 1440p MetalFX,
+2x framegen, and Play 720p video. Keep Game response first OFF:
+that low-latency setting disables interpolation by design.
