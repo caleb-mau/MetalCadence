@@ -96,4 +96,161 @@ swift build
 open FrameLabSDK.app
 ```
 
-FrameLabSDK is a reference client using the public SDK and an independent virtual capture replay process. It logs JSON lines to `~/Library/Application Support/MetalCadence/sdk-metrics.jsonl`. The reference app defaults to 2x, compare mode, and muted audio. The older FrameLab remains available separately. No media is shipped in the repository.
+FrameLabSDK is a reference client using the public SDK and an independent virtual capture replay process. It logs JSON lines to `~/Library/Application Support/MetalCadence/sdk-metrics-<run-id>.jsonl`. The reference app defaults to auto-selected 2x for a 30 FPS gaming source, compare mode, and audible recorded stereo audio. Automated benchmark runs start muted. The older FrameLab remains available separately. No media is shipped in the repository.
+
+## Workload-aware frame policy
+
+Applications can describe *what they are producing* independently of interpolation settings:
+
+```swift
+let profile = MCWorkloadProfile.interactiveGame(withSourceFPS: 30, displayFPS: 120)
+profile.kind = .interactiveGame
+profile.policy = .minimumBoost
+profile.producer = .externalCapture
+
+let settings = MCVideoConfiguration.make(profile: profile)
+settings.interpolationBackend = .videoToolbox
+// Or .linearBlend, which is faster in some cases but can cause double images.
+```
+
+Supported workload categories are interactive game, real-time 3D source, remote desktop, video playback, live production and offline render. Policies are minimum boost (prioritize getting above native FPS), lowest latency, smooth pacing, maximum throughput and power saver. Each profile creates a fixed 1×/2×/4× processing configuration, delay limits and adaptive latency policy. The reference app's **Auto FPS** option uses that planner; explicitly setting 1×/2×/4× overrides only the multiplier. The producer kind describes the upstream data source and does **not** claim the SDK can interpolate on the CPU or render 3D games. The current interpolation backend uses Apple media/Metal hardware. The linear-blend option is mathematically simple and can look ghosted during motion.
+
+The SDK uses a bounded four-unique-frame input queue so a capture burst does not silently overwrite the first frame of a pair. The processing pipeline has two independent MetalFX scratch/scaler slots and a separate GPU completion queue. When overloaded, it discards stale work rather than growing latency without bound. Display timing uses command-buffer-managed drawable presentation. The adaptive controller reserves margin based on the display refresh period and generated-frame spacing. Sampled CPU fingerprints are always verified with a full plane comparison, preventing hash collisions from causing incorrectly discarded frames. ARM64 uses optional NEON SIMD fingerprinting; the GPU hash experiment was slower due to readback synchronization.
+
+### Reproducible audit and validation
+
+```sh
+./test-sdk.sh
+./Audit/run-quality.sh 240
+./Audit/run-hashbench.sh
+./build-sdk-demo.sh
+./Audit/run-matrix.sh FrameLabSDK.app local 15 20261125
+python3 Audit/summarize.py local
+```
+
+Replay tests require `replay.mp4` and `replay.f32` in the user's Application Support directory. The report in `Audit/STATUS.md` distinguishes checked items from unverified physical device tests. Tests confirm source-to-present **software** timestamps, not controller-to-photon latency or acoustic synchronization.
+
+### Isolated capture sessions
+
+Every reference application launch generates a unique run ID (or accepts `--run-id=your-test-id`). Video packets travel through `capture-<run-id>.ring` and telemetry is written to `sdk-metrics-<run-id>.jsonl` in Application Support. Benchmark scripts assign an independent namespace to each run, stop and verify old capture processes before launching a new one, and reject mixed-mode time series. This prevents one leftover app from overwriting another capture ring or interleaving performance logs. Older un-namespaced files should not be used for new before/after claims.
+
+### Display-transition and 4× quality diagnostics
+
+```bash
+./Audit/run-quality4.sh 120
+open -n FrameLabSDK.app --args --2x --benchmark --ui-stress --run-id=display-test
+python3 Audit/audio-verify.py --run-id=display-test
+```
+
+The display diagnostic automatically enters/exits fullscreen, transfers the window to another detected screen and restores it. It requires an interactive desktop with a second display. These tests observe API presentation callbacks and command status only; they cannot prove zero optical tearing or black flashing. The quality4 probe checks phase 0.5 against a real 60fps reference frame; phases 0.25/0.75 lack 120fps ground truth.
+
+### NV12 ranges and color processing
+
+The engine accepts either video-range 8-bit NV12 (`420v`) or full-range 8-bit NV12 (`420f`). Full-range buffers are normalized using a bounded CoreVideo pixel-buffer pool before Apple's VideoToolbox interpolation, because this macOS VTFrameProcessor configuration rejects native 420f. The source buffer is retained separately for correct duplicate detection, including the exact-verification path. BT.601, BT.709 and BT.2020 YCbCr matrix attachments are preserved and used for the RGB conversion shader; inputs with no metadata default to BT.709. 10-bit P010 sources, HDR10/PQ/HLG transfer conversion, HDMI audio-clock recovery and physical UVC captures remain unimplemented/unverified.
+
+Conversion-only benchmark at 1080p (M5): `./Audit/run-rangebench.sh` P50 0.615 ms, P95 0.640 ms over 150 samples. This is not an end-to-end latency measure.
+
+The repository ships reproducible experiment summaries in `Audit/verified-results.json`; the companion `Audit/export-results.py` builds the file from isolated local JSONL runs. The source replay media is CC BY 3.0 and is not redistributed in this repository. This is an **experimental** SDK, not yet a production gaming client.
+
+### Adaptive latency and developer source formatting
+
+The experimental `MCLatencyController` tracks GPU-ready timing, refresh
+intervals, output queue pressure and stereo PCM scheduling age. Its goal is to
+preserve fresh frames while reducing unnecessary playout buffering, not to
+guarantee 60 or 120 FPS. See
+[`Audit/latency-controller.md`](Audit/latency-controller.md) for before/after
+measurements, native-audio tradeoffs, unresolved hardware validation and
+reproduction caveats.
+
+Objective-C/C source is formatted consistently with the repository-wide
+`.clang-format`. Run `./scripts/format.sh` after edits and
+`./scripts/format.sh --check` before committing. SDK and demo builds run the
+check automatically; pull requests have an independent formatting job. Removing
+whitespace does not improve runtime performance.
+
+## Objective-C++20 internals and GPU resource tuning
+
+MetalCadence's implementation uses **Objective-C++20** (`.mm`) to combine
+Foundation, CoreVideo, VideoToolbox, Metal and MetalFX with C++20 resource
+management. The public headers remain regular Objective-C, so existing Swift
+and Objective-C consumers retain the same API. `Package.swift` declares
+`cxxLanguageStandard: .cxx20`; source and test builds use `clang++ -std=c++20`.
+This is an architectural change, not a claim that C++ automatically generates
+frames more quickly.
+
+The output/native texture caches share one accounted GPU memory budget and
+track active versus cached resources. For a consumer that needs custom limits:
+
+```objc
+MCVideoConfiguration *configuration = [MCVideoConfiguration new];
+configuration.gpuTextureBudgetMiB = 512;
+configuration.maxCachedTexturesPerPool = 12;
+configuration.preallocatedTexturesPerPool = 0; // Lazy is the measured default.
+configuration.maxConcurrentGPUBatches = 2;   // Separate scaler and scratch per slot.
+```
+
+`gpuTextureBudgetMiB` only covers the SDK's two pooled private texture
+classes, not all memory held by MetalFX, VideoToolbox, system drawables or the
+GPU driver. More preallocated textures or in-flight batches are not
+automatically faster, and both consume unified memory.
+
+The production rendering and NV12 conversion shaders live in
+`Shaders/Production.metal`; independent diagnostic shaders live in
+`Diagnostic.metal` and `LegacyDemo.metal`. Normal app builds compile
+`.metallib` files ahead of time. The Swift Package retains deterministic
+generated source fallbacks for applications that do not bundle a library.
+After editing any `.metal` file, run `./scripts/format.sh` to format source
+and regenerate matching fallback headers.
+
+```bash
+./scripts/format.sh --check
+./test-sdk.sh
+(cd Examples/SwiftConsumer && swift run Smoke)
+./build-sdk-demo.sh
+./Audit/run-shader-color.sh
+./Audit/run-metal-heaps.sh
+./Audit/run-cpp20-pools.sh 16 20261125
+./Audit/run-cpp20-cadence.sh 15 20261125
+python3 Audit/export-cpp20.py
+```
+
+**Evidence and limitations:** [Objective-C++20 engineering audit](Audit/cpp20-engineering-report.md)
+and [machine-readable benchmarks](Audit/verified-cpp20-results.json).
+The same-refresh baseline shows similar fresh FPS and processing latency,
+a lower observed process footprint and fewer output allocations, but worse
+presentation-gap P99. Software presentation timestamps are not
+controller-to-photon latency. The SDK remains experimental.
+
+### Presentation Pipeline V2 (experimental)
+
+The C++20 presentation engine adds fixed-capacity, allocation-free timing
+histograms for GPU-ready-to-display selection, CPU encode, GPU queue wait,
+callback timing and presentation target errors. It also exposes optional
+interactive newest-due selection, a dedicated high-priority display run loop,
+partial held-frame redraw and refresh-dependent lateness controls.
+
+By default the SDK preserves the previously validated smooth frame selection,
+main-thread display link, held-frame redraw and 1.5-refresh lateness window.
+Additional public `MCVideoConfiguration` properties are:
+
+```objc
+config.preferFreshestFrame = NO;
+config.dedicatedPresentationThread = NO;
+config.skipRedundantPresentations = NO;
+config.heldRefreshDrawEvery = 1;
+config.presentationLatenessRefreshes = 1.5;
+```
+
+The reference app accepts opt-in test flags `--freshest`,
+`--dedicated-display`, `--skip-held`, `--held-redraw-every=2`,
+`--late-refreshes=2.0`, `--refresh-hz=120` and
+`--benchmark-screen=slowest` (for a physical low-refresh connected screen).
+`--refresh-hz` requests a callback frequency but does not change the
+monitor's physical refresh mode.
+
+The [Presentation V2 audit](Audit/presentation-v2-report.md) records
+before/after results, failed configurations, remaining hardware limitations
+and reproducible commands. The [verified results](Audit/verified-presentation-v2.json)
+are generated from isolated local sessions. The default P99 latency target
+has **not** been met. Do not assume a requested 120 Hz rate was physically
+delivered without checking the observed callback and monitor refresh metrics.

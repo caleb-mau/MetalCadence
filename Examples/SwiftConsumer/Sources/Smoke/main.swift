@@ -4,7 +4,11 @@ import QuartzCore
 import MetalCadence
 
 if #available(macOS 26.0, *) {
-    let configuration = MCVideoConfiguration()
+    let profile = MCWorkloadProfile.interactiveGame(withSourceFPS: 30, displayFPS: 120)
+    profile.policy = .minimumBoost
+    profile.producer = .externalCapture
+    let configuration = MCVideoConfiguration.make(profile: profile)
+    configuration.interpolationBackend = .videoToolbox
     configuration.inputWidth = 1280
     configuration.inputHeight = 720
     configuration.outputWidth = 1920
