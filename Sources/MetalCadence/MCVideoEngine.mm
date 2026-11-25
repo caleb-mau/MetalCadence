@@ -8,6 +8,7 @@
 #import <math.h>
 #include "internal/MCTexturePool.hpp"
 #include "internal/MCFixedTimingWindow.hpp"
+#include "internal/MCSceneDiscontinuity.hpp"
 #include <memory>
 #include <bitset>
 #if defined(__aarch64__)
@@ -36,6 +37,7 @@ static NSError *MCError(NSString *message) {
         _adaptiveLatency = YES;
         _duplicateDetection = YES;
         _audioEnabled = YES;
+        _suppressAbruptInterpolation = NO;
         _playoutDelay = .075;
         _minimumDelay = .012;
         _maximumDelay = .125;
@@ -65,6 +67,7 @@ static NSError *MCError(NSString *message) {
     c.adaptiveLatency = _adaptiveLatency;
     c.duplicateDetection = _duplicateDetection;
     c.audioEnabled = _audioEnabled;
+    c.suppressAbruptInterpolation = _suppressAbruptInterpolation;
     c.playoutDelay = _playoutDelay;
     c.minimumDelay = _minimumDelay;
     c.maximumDelay = _maximumDelay;
@@ -165,12 +168,28 @@ static NSError *MCError(NSString *message) {
 @property MCTexturePool *pool, *nativePool;
 @property NSArray<id<MTLTexture>> *nativeTextures;
 @end
+static void MCRecycleUniqueTextures(NSArray<id<MTLTexture>> *textures, MCTexturePool *pool) {
+    if (!pool)
+        return;
+    // A scene discontinuity may intentionally reuse a single texture in all
+    // generated phases. Release each physical texture lease exactly once.
+    for (NSUInteger i = 0; i < textures.count; i++) {
+        id<MTLTexture> item = textures[i];
+        BOOL seen = NO;
+        for (NSUInteger j = 0; j < i; j++) {
+            if (textures[j] == item) {
+                seen = YES;
+                break;
+            }
+        }
+        if (!seen)
+            [pool put:item];
+    }
+}
 @implementation MCOutputBatch
 - (void)dealloc {
-    for (id<MTLTexture> t in _textures)
-        [_pool put:t];
-    for (id<MTLTexture> t in _nativeTextures)
-        [_nativePool put:t];
+    MCRecycleUniqueTextures(_textures, _pool);
+    MCRecycleUniqueTextures(_nativeTextures, _nativePool);
 }
 @end
 #include "internal/MCProductionShaderSource.hpp"
@@ -304,6 +323,7 @@ static MCPipelineBundle *MCProductionPipelines(id<MTLDevice> device,
 @property uint64_t lastHash;
 @property double lastPTS, lastOutputPTS, nextAudioPTS, lastAudioSource;
 @property int64_t outputID;
+@property (atomic) long abruptHoldBatches;
 @property (atomic) long outputFrameAttempts;
 @property (atomic) long rejectedOutputFrames;
 @property (atomic) long incompleteGeneratedBatches;
@@ -752,6 +772,28 @@ static uint64_t MCNEONFingerprint(CVPixelBufferRef b) {
     CVPixelBufferUnlockBaseAddress(b, kCVPixelBufferLock_ReadOnly);
     return h;
 }
+static BOOL MCShouldHoldDiscontinuity(CVPixelBufferRef a, CVPixelBufferRef b) {
+    if (!a || !b || a == b || CVPixelBufferGetPlaneCount(a) < 1 ||
+        CVPixelBufferGetPlaneCount(b) < 1 || CVPixelBufferGetWidth(a) != CVPixelBufferGetWidth(b) ||
+        CVPixelBufferGetHeight(a) != CVPixelBufferGetHeight(b))
+        return NO;
+    if (CVPixelBufferLockBaseAddress(a, kCVPixelBufferLock_ReadOnly) != kCVReturnSuccess)
+        return NO;
+    if (CVPixelBufferLockBaseAddress(b, kCVPixelBufferLock_ReadOnly) != kCVReturnSuccess) {
+        CVPixelBufferUnlockBaseAddress(a, kCVPixelBufferLock_ReadOnly);
+        return NO;
+    }
+    const auto verdict = metalcadence::classifyDiscontinuity(
+        static_cast<const uint8_t *>(CVPixelBufferGetBaseAddressOfPlane(a, 0)),
+        static_cast<const uint8_t *>(CVPixelBufferGetBaseAddressOfPlane(b, 0)),
+        CVPixelBufferGetWidthOfPlane(a, 0),
+        CVPixelBufferGetHeightOfPlane(a, 0),
+        CVPixelBufferGetBytesPerRowOfPlane(a, 0),
+        CVPixelBufferGetBytesPerRowOfPlane(b, 0));
+    CVPixelBufferUnlockBaseAddress(b, kCVPixelBufferLock_ReadOnly);
+    CVPixelBufferUnlockBaseAddress(a, kCVPixelBufferLock_ReadOnly);
+    return verdict.abrupt;
+}
 static BOOL MCEqualNV12(CVPixelBufferRef a, CVPixelBufferRef b) {
     if (a == b)
         return YES;
@@ -1049,10 +1091,15 @@ static void MCInitializeColorRangeLUT(void) {
         _scaler = _scalers[slot];
     BOOL useBlend =
         _configuration.interpolationBackend == MCInterpolationBackendLinearBlend && mult > 1;
+    BOOL holdAbrupt = mult > 1 && _configuration.suppressAbruptInterpolation &&
+                      MCShouldHoldDiscontinuity(a.buffer, b.buffer);
+    if (holdAbrupt)
+        self.abruptHoldBatches++;
+
     NSMutableArray *dest = [NSMutableArray new], *frames = [NSMutableArray new],
                    *phases = [NSMutableArray new];
     BOOL ok = YES;
-    for (int i = 1; !useBlend && i < mult; i++) {
+    for (int i = 1; !useBlend && !holdAbrupt && i < mult; i++) {
         CVPixelBufferRef pb = NULL;
         if (CVPixelBufferPoolCreatePixelBuffer(
                 NULL,
@@ -1078,7 +1125,7 @@ static void MCInitializeColorRangeLUT(void) {
         [phases addObject:@(phase)];
     }
     NSError *vtError = nil;
-    if (mult > 1 && !useBlend && ok) {
+    if (mult > 1 && !useBlend && !holdAbrupt && ok) {
         VTFrameProcessorFrame *af = [[VTFrameProcessorFrame alloc]
                                          initWithBuffer:a.buffer
                                   presentationTimeStamp:CMTimeMakeWithSeconds(a.pts, 60000)],
@@ -1117,7 +1164,14 @@ static void MCInitializeColorRangeLUT(void) {
         ok = NO;
     }
     NSMutableArray *temporaryScaled = [NSMutableArray new], *temporaryNative = [NSMutableArray new];
-    if (useBlend && ok && first && native.count) {
+    if (holdAbrupt && ok && first && native.count) {
+        // Repeat the previous real image until the next real source frame.
+        // Never feed a hard teleport through VideoToolbox optical flow.
+        for (NSInteger i = 1; i < mult; i++) {
+            [textures addObject:first];
+            [native addObject:native[0]];
+        }
+    } else if (useBlend && ok && first && native.count) {
         id<MTLTexture> next = [self scale:b.buffer cb:cb refs:refs native:temporaryNative];
         if (next && temporaryNative.count) {
             [temporaryScaled addObject:next];
@@ -1188,10 +1242,8 @@ static void MCInitializeColorRangeLUT(void) {
                           (long)completed.status,
                           completed.error);
                     self.gpuErrors++;
-                    for (id t in textures)
-                        [self.pool put:t];
-                    for (id t in native)
-                        [self.nativePool put:t];
+                    MCRecycleUniqueTextures(textures, self.pool);
+                    MCRecycleUniqueTextures(native, self.nativePool);
                 } else {
                     if (textures.count < (NSUInteger)mult || !success)
                         self.incompleteGeneratedBatches++;
@@ -1264,10 +1316,8 @@ static void MCInitializeColorRangeLUT(void) {
                         self->_arrivalSamples.record((b.arrival - b.pts) * 1000);
                         [self.statisticsLock unlock];
                     } else {
-                        for (id t in textures)
-                            [self.pool put:t];
-                        for (id t in native)
-                            [self.nativePool put:t];
+                        MCRecycleUniqueTextures(textures, self.pool);
+                        MCRecycleUniqueTextures(native, self.nativePool);
                     }
                 }
                 [self.lock lock];
@@ -1427,6 +1477,8 @@ static void MCInitializeColorRangeLUT(void) {
     m[@"fallbackSlowStreak"] = @(self.budgetController.slowStreak);
     m[@"gpuErrors"] = @(self.gpuErrors);
     m[@"scheduledFrames"] = @(self.submitted);
+    m[@"abruptHoldBatches"] = @(self.abruptHoldBatches);
+    m[@"abruptGuardEnabled"] = @(_configuration.suppressAbruptInterpolation);
     m[@"outputFrameAttempts"] = @(self.outputFrameAttempts);
     m[@"rejectedOutputFrames"] = @(self.rejectedOutputFrames);
     m[@"incompleteGeneratedBatches"] = @(self.incompleteGeneratedBatches);

@@ -258,7 +258,7 @@ delivered without checking the observed callback and monitor refresh metrics.
 
 ## Interactive latency lab (macOS 26+)
 
-Run \`./build-latency-lab.sh && open MetalCadenceLatencyLab.app\`.
+Run `./build-latency-lab.sh && open MetalCadenceLatencyLab.app`.
 This is a controllable *synthetic* 30 FPS source. The left side is a separate
 native 1×/30 FPS path with no configured playout buffer. The right side uses
 actual VideoToolbox interpolation at 2×/60 FPS or 4×/120 FPS, with independently
@@ -273,6 +273,24 @@ HDMI capture latency or LCD scanout. The 4× mode can only be observed at
 120 unique presentations on a 120 Hz or faster active display. Scene-cut
 artifacts and timing differences are intentionally visible.
 
-Run \`open MetalCadenceLatencyLab.app --args --self-test\` for six automatically
+Run `open MetalCadenceLatencyLab.app --args --self-test` for six automatically
 triggered actions. JSON event pairs are written to
-\`~/Library/Application Support/MetalCadence/latency-lab-*.jsonl\`.
+`~/Library/Application Support/MetalCadence/latency-lab-*.jsonl`.
+
+### Abrupt motion and optical-flow artifacts
+
+The VideoToolbox interpolation engine can synthesize colored ghosting when a
+source frame abruptly teleports an object, changes scenes, or reveals a large
+occluded region. Metal is the GPU execution API, not the cause of that effect.
+
+The opt-in setting `MCVideoConfiguration.suppressAbruptInterpolation = YES`
+samples luma differences between successive real frames. When the input
+changes sharply, intermediate phases hold the previous frame rather than
+invoking optical flow. Output presentation cadence is still maintained, but
+the transition itself has only the original source motion detail. The guard
+may classify fast camera motion as a cut; do not enable by default for gameplay
+until validated on real captured footage.
+
+In the latency lab, the “Protect abrupt jumps” toggle enables the guard.
+Automated paired comparison: add `--no-scene-guard` to disable it. Metrics
+include `abruptHoldBatches` and `abruptGuardEnabled`.

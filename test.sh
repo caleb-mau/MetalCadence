@@ -19,3 +19,8 @@ xcrun clang++ -std=c++20 -O2 -fobjc-arc -I Sources/MetalCadence/include     Sour
 # Exercise the platform-independent deadline selector and overdue pressure policy.
 xcrun clang++ -std=c++20 -O2 -I Sources/MetalCadence Tests/scheduler-policy.cpp -o /tmp/metalcadence-scheduler-policy-test
 /tmp/metalcadence-scheduler-policy-test
+
+# Scene cut guard is pure C++20 and works on Linux or macOS.
+xcrun clang++ -std=c++20 -O2 -I Sources/MetalCadence Tests/scene-discontinuity.cpp \
+  -o /tmp/metalcadence-scene-discontinuity-test
+/tmp/metalcadence-scene-discontinuity-test

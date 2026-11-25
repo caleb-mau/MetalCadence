@@ -135,6 +135,66 @@ TestOutputFrameCount(NSInteger multiplier,
     [engine stop];
 }
 
+static CVPixelBufferRef MakeTeleportFrame(bool right) {
+    CVPixelBufferRef frame = MakeNV12Frame(32);
+    CVPixelBufferLockBaseAddress(frame, 0);
+    uint8_t *plane = (uint8_t *)CVPixelBufferGetBaseAddressOfPlane(frame, 0);
+    size_t stride = CVPixelBufferGetBytesPerRowOfPlane(frame, 0);
+    const int x = right ? 870 : 214;
+    for (int row = 254; row < 446; row++)
+        memset(plane + row * stride + x, 208, 192);
+    CVPixelBufferUnlockBaseAddress(frame, 0);
+    return frame;
+}
+static void TestAbruptGuard(bool nativeResolution, NSInteger multiplier = 2) {
+    MCVideoConfiguration *c = [MCVideoConfiguration new];
+    c.inputWidth = 1280;
+    c.inputHeight = 720;
+    c.outputWidth = nativeResolution ? 1280 : 1920;
+    c.outputHeight = nativeResolution ? 720 : 1080;
+    c.multiplier = multiplier;
+    c.interpolationBackend =
+        multiplier == 4 ? MCInterpolationBackendLinearBlend : MCInterpolationBackendVideoToolbox;
+    c.suppressAbruptInterpolation = YES;
+    c.duplicateDetection = NO;
+    c.audioEnabled = NO;
+    CAMetalLayer *layer = [CAMetalLayer layer];
+    layer.device = MTLCreateSystemDefaultDevice();
+    NSError *error = nil;
+    MCVideoEngine *engine = [[MCVideoEngine alloc] initWithConfiguration:c
+                                                                   layer:layer
+                                                                   error:&error];
+    assert(engine != nil);
+    assert([engine startWithRefreshRate:60 error:&error]);
+    double origin = CACurrentMediaTime();
+    const int inputCount = 12;
+    for (int index = 0; index < inputCount; index++) {
+        CVPixelBufferRef frame = MakeTeleportFrame((index % 2) != 0);
+        assert([engine submitVideo:frame hostTime:origin + index / 30.]);
+        CVPixelBufferRelease(frame);
+        [NSThread sleepForTimeInterval:1. / 30];
+    }
+    NSDictionary *m = nil;
+    for (int attempt = 0; attempt < 250; attempt++) {
+        m = [engine metrics];
+        if ([m[@"processed"] intValue] >= inputCount - 1)
+            break;
+        [NSThread sleepForTimeInterval:.01];
+    }
+    assert([m[@"processed"] intValue] == inputCount - 1);
+    assert([m[@"scheduledFrames"] intValue] == multiplier * (inputCount - 1));
+    assert([m[@"abruptHoldBatches"] intValue] == inputCount - 1);
+    assert([m[@"interpolationErrors"] intValue] == 0);
+    assert([m[@"gpuErrors"] intValue] == 0);
+    assert([m[@"textureBudgetDenied"] intValue] == 0);
+    [engine stop];
+    printf("ABRUPT-GUARD native=%d factor=%ld pairs=%d held=%d errors=0\n",
+           nativeResolution,
+           (long)multiplier,
+           inputCount - 1,
+           inputCount - 1);
+}
+
 int main(void) {
     @autoreleasepool {
         if (@available(macOS 26.0, *)) {
@@ -144,6 +204,9 @@ int main(void) {
             TestOutputFrameCount(1, 1, true);
             TestOutputFrameCount(2, 2, true);
             TestOutputFrameCount(2, 2, true, MCInterpolationBackendLinearBlend);
+            TestAbruptGuard(false);
+            TestAbruptGuard(true);
+            TestAbruptGuard(true, 4);
         } else {
             puts("Output test requires macOS 26 or later");
             return 2;
