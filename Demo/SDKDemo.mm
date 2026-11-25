@@ -57,6 +57,11 @@
         c.multiplier = mult;
     c.presentation = (MCVideoPresentation)self.mode.indexOfSelectedItem;
     for (NSString *argument in NSProcessInfo.processInfo.arguments) {
+        if ([argument hasPrefix:@"--late-latch-ms="]) {
+            double ms = [[argument substringFromIndex:16] doubleValue];
+            if (isfinite(ms) && ms >= 0 && ms <= 10)
+                c.lateLatchDelaySeconds = ms / 1000.;
+        }
         if ([argument hasPrefix:@"--late-refreshes="]) {
             c.presentationLatenessRefreshes = [[argument substringFromIndex:17] doubleValue];
         }

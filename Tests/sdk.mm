@@ -95,6 +95,13 @@ int main() {
             assert(!engine.running);
             assert([engine startWithRefreshRate:60 error:&e]);
             [engine stop];
+            MCVideoConfiguration *latching = [MCVideoConfiguration new];
+            latching.lateLatchDelaySeconds = .008;
+            assert(fabs([[latching copy] lateLatchDelaySeconds] - .008) < .000001);
+            latching.lateLatchDelaySeconds = .021;
+            assert([[MCVideoEngine alloc] initWithConfiguration:latching
+                                                          layer:[CAMetalLayer layer]
+                                                          error:nil] == nil);
             MCVideoConfiguration *raw = [MCVideoConfiguration new];
             raw.inputWidth = 1280;
             raw.inputHeight = 720;

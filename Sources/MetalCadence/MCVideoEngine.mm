@@ -44,6 +44,7 @@ static NSError *MCError(NSString *message) {
         _presentation = MCVideoPresentationEnhanced;
         _preferFreshestFrame = NO;
         _dedicatedPresentationThread = NO;
+        _lateLatchDelaySeconds = 0;
         _skipRedundantPresentations = NO;
         _heldRefreshDrawEvery = 1;
         _presentationLatenessRefreshes = 1.5;
@@ -74,6 +75,7 @@ static NSError *MCError(NSString *message) {
     c.presentation = _presentation;
     c.preferFreshestFrame = _preferFreshestFrame;
     c.dedicatedPresentationThread = _dedicatedPresentationThread;
+    c.lateLatchDelaySeconds = _lateLatchDelaySeconds;
     c.skipRedundantPresentations = _skipRedundantPresentations;
     c.heldRefreshDrawEvery = _heldRefreshDrawEvery;
     c.presentationLatenessRefreshes = _presentationLatenessRefreshes;
@@ -361,8 +363,10 @@ static MCPipelineBundle *MCProductionPipelines(id<MTLDevice> device,
         c.outputWidth < 2 || c.outputHeight < 2 ||
         !(c.multiplier == 1 || c.multiplier == 2 || c.multiplier == 4) ||
         !isfinite(c.minimumDelay) || !isfinite(c.maximumDelay) || !isfinite(c.playoutDelay) ||
-        c.minimumDelay < 0 || c.maximumDelay < c.minimumDelay || c.gpuTextureBudgetMiB < 64 ||
-        c.gpuTextureBudgetMiB > 16384 || c.maxCachedTexturesPerPool > 256 ||
+        !isfinite(c.lateLatchDelaySeconds) || c.lateLatchDelaySeconds < 0 ||
+        c.lateLatchDelaySeconds > .010 || c.minimumDelay < 0 || c.maximumDelay < c.minimumDelay ||
+        c.gpuTextureBudgetMiB < 64 || c.gpuTextureBudgetMiB > 16384 ||
+        c.maxCachedTexturesPerPool > 256 ||
         c.preallocatedTexturesPerPool > c.maxCachedTexturesPerPool ||
         c.maxConcurrentGPUBatches < 1 || c.maxConcurrentGPUBatches > 4) {
         if (error)
@@ -532,6 +536,7 @@ static MCPipelineBundle *MCProductionPipelines(id<MTLDevice> device,
                 callback(sourceTime, presentedTime, frameID);
         };
     _scheduler.useDedicatedRenderThread = c.dedicatedPresentationThread;
+    _scheduler.lateLatchDelaySeconds = c.lateLatchDelaySeconds;
     _scheduler.skipHeldDraws = c.skipRedundantPresentations;
     _scheduler.heldRefreshDrawEvery = c.heldRefreshDrawEvery;
     _scheduler.latenessRefreshAllowance = c.presentationLatenessRefreshes;

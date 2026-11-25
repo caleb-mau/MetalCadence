@@ -46,6 +46,9 @@ API_AVAILABLE(macos(26.0))
 @property BOOL preferFreshestFrame;
 /// Opt-in high-priority display-link run loop, separate from AppKit main run loop.
 @property BOOL dedicatedPresentationThread;
+/// Opt-in deferred frame selection. 0 disables; permitted 0..10 milliseconds.
+/// Only enable with verified display deadline slack and a visible active screen.
+@property double lateLatchDelaySeconds;
 /// Opt-in: skip redundant GPU redraws when the displayed frame is unchanged.
 @property BOOL skipRedundantPresentations;
 /// Optional partial held-frame redraw interval. 1 retains existing behavior.
