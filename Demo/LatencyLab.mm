@@ -15,6 +15,7 @@ static const int LabHeight = 720;
 @interface MCLabInputEvent : NSObject
 @property NSUInteger index;
 @property double pressedTime, sourcePTS, leftResponse, rightResponse;
+\n @property double leftSourceToPresentation, rightSourceToPresentation;
 @property BOOL written;
 @end
 @implementation MCLabInputEvent
@@ -120,6 +121,9 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
         @"referenceInputToPresentationMs" : @(event.leftResponse),
         @"enhancedInputToPresentationMs" : @(event.rightResponse),
         @"extraGeneratedDelayMs" : @(event.rightResponse - event.leftResponse),
+        @"inputToSourceMs" : @((event.sourcePTS - event.pressedTime) * 1000),
+        @"leftSourceToPresentationMs" : @(event.leftSourceToPresentation),
+        @"rightSourceToPresentationMs" : @(event.rightSourceToPresentation),
         @"enhancedMultiplier" : @(self.quality.indexOfSelectedItem == 1 ? 4 : 2),
         @"bufferMode" : self.buffer.titleOfSelectedItem ?: @"unknown",
         @"displayHz" : @(self.refreshRate)
@@ -145,9 +149,11 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
             double latency = MAX(0, actual - event.pressedTime) * 1000;
             if (enhanced) {
                 event.rightResponse = latency;
+                event.rightSourceToPresentation = MAX(0, actual - event.sourcePTS) * 1000;
                 self.lastRightTime = latency;
             } else {
                 event.leftResponse = latency;
+                event.leftSourceToPresentation = MAX(0, actual - event.sourcePTS) * 1000;
                 self.lastLeftTime = latency;
             }
             [self writeEvent:event];
@@ -474,6 +480,18 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
     self.buffer.target = self;
     self.buffer.action = @selector(reconfigure:);
     [root addSubview:self.buffer];
+    \n for (NSString *argument in NSProcessInfo.processInfo.arguments) {
+        if ([argument isEqualToString:@"--right-mode=fast"])
+            [self.buffer selectItemAtIndex:1];
+        else if ([argument isEqualToString:@"--right-mode=fixed55"])
+            [self.buffer selectItemAtIndex:2];
+        else if ([argument isEqualToString:@"--right-mode=fixed85"])
+            [self.buffer selectItemAtIndex:3];
+        else if ([argument isEqualToString:@"--right-mode=fixed125"])
+            [self.buffer selectItemAtIndex:4];
+        else if ([argument isEqualToString:@"--factor=4"])
+            [self.quality selectItemAtIndex:1];
+    }
     self.triggerButton = [NSButton buttonWithTitle:@"SWAP TARGET  ·  SPACE"
                                             target:self
                                             action:@selector(triggerButtonPressed:)];
