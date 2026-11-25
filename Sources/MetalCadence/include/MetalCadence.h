@@ -59,6 +59,10 @@ typedef struct {
 @property (nonatomic) MCFrameSelectionMode selectionMode;
 /// Effective queue depth, clamped to the construction-time capacity.
 @property (nonatomic) NSUInteger maximumPendingFrames;
+/// Experimental maximum deferred-selection interval in seconds (0 to .010).
+/// 0 retains callback-time selection. Deferred selection runs off the UI thread
+/// and never intentionally crosses the display link's submission deadline.
+@property (nonatomic) double lateLatchDelaySeconds;
 /// Optional high-QoS presentation run loop, independent of UI event handling.
 /// Set before start; the default remains the main thread until validated.
 @property (nonatomic) BOOL useDedicatedRenderThread;

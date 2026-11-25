@@ -48,7 +48,9 @@ def analyze(path, warmup):
         if key in last:
             print(f"  {float(last[key]):8.4f}  {label}")
     print("Display-link scheduling contract (ms):")
-    for key in ("callbackLeadP50Ms", "schedulerSubmissionDeadlineLeadP05Ms",
+    for key in ("schedulerLateLatchRequestedMs", "schedulerLateLatchActualP50Ms",
+                "schedulerLateLatchActualP95Ms",
+                "callbackLeadP50Ms", "schedulerSubmissionDeadlineLeadP05Ms",
                 "schedulerSubmissionDeadlineLeadP50Ms",
                 "schedulerSubmissionDeadlineSlackP05Ms",
                 "schedulerSubmissionDeadlineSlackP50Ms"):

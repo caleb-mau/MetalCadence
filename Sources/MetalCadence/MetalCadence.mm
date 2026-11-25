@@ -46,6 +46,7 @@ NSInteger MCSelectDueFrame(const double *pts, NSUInteger count, double target, d
     NSThread *_renderThread;
     CFRunLoopRef _renderRunLoop;
     dispatch_semaphore_t _renderThreadReady, _renderThreadExited;
+    dispatch_queue_t _lateLatchQueue;
     BOOL _renderThreadStarting;
     CAMetalLayer *_layer;
     id<MTLCommandQueue> _commandQueue;
@@ -76,6 +77,8 @@ NSInteger MCSelectDueFrame(const double *pts, NSUInteger count, double target, d
     // be safe without missing the OS display link's submission deadline.
     metalcadence::FixedTimingWindow<256> _submissionDeadlineLeadWindow;
     metalcadence::FixedTimingWindow<256> _submissionDeadlineSlackWindow;
+    metalcadence::FixedTimingWindow<256> _actualLateLatchWindow;
+    uint64_t _lateLatchFallbacks;
     uint64_t _interactiveSuperseded;
     uint64_t _redundantDrawsSkipped;
 }
@@ -95,6 +98,11 @@ NSInteger MCSelectDueFrame(const double *pts, NSUInteger count, double target, d
         _maxFrameLateness = .025;
         _latenessRefreshAllowance = 1.5;
         _heldRefreshDrawEvery = 1;
+        _lateLatchDelaySeconds = 0;
+        _lateLatchQueue =
+            dispatch_queue_create("com.metalcadence.presentation.late-latch",
+                                  dispatch_queue_attr_make_with_qos_class(
+                                      DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INTERACTIVE, 0));
         _selectionMode = MCFrameSelectionSmooth;
         _maximumPendingFrames = _capacity;
         _queue = [NSMutableArray arrayWithCapacity:_capacity];
@@ -272,7 +280,9 @@ NSInteger MCSelectDueFrame(const double *pts, NSUInteger count, double target, d
     os_unfair_lock_unlock(&_lock);
     return YES;
 }
-- (void)metalDisplayLink:(CAMetalDisplayLink *)link needsUpdate:(CAMetalDisplayLinkUpdate *)update {
+- (void)renderScheduledUpdate:(CAMetalDisplayLinkUpdate *)update
+            callbackTimestamp:(double)callbackTimestamp
+             capturedDrawable:(id<CAMetalDrawable>)preacquiredDrawable {
     @autoreleasepool {
         double now = CACurrentMediaTime(), target = update.targetPresentationTimestamp;
         const double lockAttempt = CACurrentMediaTime();
@@ -280,12 +290,13 @@ NSInteger MCSelectDueFrame(const double *pts, NSUInteger count, double target, d
         const double lockAcquired = CACurrentMediaTime();
         _callbackLockWaitWindow.record((lockAcquired - lockAttempt) * 1000);
         _callbacks++;
-        if (_lastCallback > 0 && now > _lastCallback) {
-            _callbackGapWindow.record((now - _lastCallback) * 1000);
+        if (_lastCallback > 0 && callbackTimestamp > _lastCallback) {
+            _callbackGapWindow.record((callbackTimestamp - _lastCallback) * 1000);
         }
-        _lastCallback = now;
-        _callbackLeadWindow.record((target - now) * 1000);
-        _submissionDeadlineLeadWindow.record((update.targetTimestamp - now) * 1000);
+        _lastCallback = callbackTimestamp;
+        _callbackLeadWindow.record((target - callbackTimestamp) * 1000);
+        _submissionDeadlineLeadWindow.record((update.targetTimestamp - callbackTimestamp) * 1000);
+        _actualLateLatchWindow.record((now - callbackTimestamp) * 1000);
         if (now > update.targetTimestamp) {
             _missedDeadline++;
         }
@@ -295,7 +306,7 @@ NSInteger MCSelectDueFrame(const double *pts, NSUInteger count, double target, d
             return;
         }
         const double drawableAttempt = CACurrentMediaTime();
-        id<CAMetalDrawable> drawable = update.drawable;
+        id<CAMetalDrawable> drawable = preacquiredDrawable ?: update.drawable;
         _drawableLookupWindow.record((CACurrentMediaTime() - drawableAttempt) * 1000);
         if (!drawable) {
             _noFrame++;
@@ -438,6 +449,36 @@ NSInteger MCSelectDueFrame(const double *pts, NSUInteger count, double target, d
         os_unfair_lock_unlock(&_lock);
     }
 }
+- (void)metalDisplayLink:(CAMetalDisplayLink *)link needsUpdate:(CAMetalDisplayLinkUpdate *)update {
+    (void)link;
+    const double callbackTimestamp = CACurrentMediaTime();
+    double requestedDelay = self.lateLatchDelaySeconds;
+    if (requestedDelay > 0 && _lateLatchQueue) {
+        // Apple requires presenting the display-link drawable before its
+        // targetTimestamp. P05 available slack is about 16 ms at 60 Hz on M5.
+        // Hold at least 6 ms for dispatch jitter, CPU encode and GPU submit.
+        double untilDeadline = update.targetTimestamp - callbackTimestamp;
+        double delay = MIN(requestedDelay, MAX(0., untilDeadline - .006));
+        if (delay >= .001) {
+            id<CAMetalDrawable> drawable = update.drawable;
+            if (drawable) {
+                CAMetalDisplayLinkUpdate *capturedUpdate = update;
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)),
+                               _lateLatchQueue,
+                               ^{
+                                   [self renderScheduledUpdate:capturedUpdate
+                                             callbackTimestamp:callbackTimestamp
+                                              capturedDrawable:drawable];
+                               });
+                return;
+            }
+        }
+        os_unfair_lock_lock(&_lock);
+        _lateLatchFallbacks++;
+        os_unfair_lock_unlock(&_lock);
+    }
+    [self renderScheduledUpdate:update callbackTimestamp:callbackTimestamp capturedDrawable:nil];
+}
 - (MCSchedulerPressure)pressureCounters {
     const double now = CACurrentMediaTime();
     os_unfair_lock_lock(&_lock);
@@ -495,6 +536,9 @@ NSInteger MCSelectDueFrame(const double *pts, NSUInteger count, double target, d
     auto callbackTotal = _callbackTotalWindow;
     auto submissionDeadlineLead = _submissionDeadlineLeadWindow;
     auto submissionDeadlineSlack = _submissionDeadlineSlackWindow;
+    auto actualLateLatch = _actualLateLatchWindow;
+    const auto snapshot_lateLatchFallbacks = _lateLatchFallbacks;
+    const auto snapshot_lateLatchRequestMs = self.lateLatchDelaySeconds * 1000;
     const auto snapshot_callbackAgeMs =
         _lastCallback > 0 ? (CACurrentMediaTime() - _lastCallback) * 1000 : 0;
     const auto snapshot_callbacks = _callbacks;
@@ -586,6 +630,10 @@ NSInteger MCSelectDueFrame(const double *pts, NSUInteger count, double target, d
     m[@"schedulerCallbackTotalP50Ms"] = @(callbackTotal.percentile(.50));
     m[@"schedulerCallbackTotalP95Ms"] = @(callbackTotal.percentile(.95));
     m[@"schedulerCallbackTotalP99Ms"] = @(callbackTotal.percentile(.99));
+    m[@"schedulerLateLatchRequestedMs"] = @(snapshot_lateLatchRequestMs);
+    m[@"schedulerLateLatchActualP50Ms"] = @(actualLateLatch.percentile(.50));
+    m[@"schedulerLateLatchActualP95Ms"] = @(actualLateLatch.percentile(.95));
+    m[@"schedulerLateLatchFallbacks"] = @(snapshot_lateLatchFallbacks);
     m[@"schedulerSubmissionDeadlineLeadP05Ms"] = @(submissionDeadlineLead.percentile(.05));
     m[@"schedulerSubmissionDeadlineLeadP50Ms"] = @(submissionDeadlineLead.percentile(.50));
     m[@"schedulerSubmissionDeadlineLeadP95Ms"] = @(submissionDeadlineLead.percentile(.95));

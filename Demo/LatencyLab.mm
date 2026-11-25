@@ -31,7 +31,7 @@ static const int LabHeight = 720;
 @property NSTextField *heading, *subtitle, *leftTitle, *rightTitle, *leftNumbers, *rightNumbers;
 @property NSTextField *status, *instructions, *footnote;
 @property NSPopUpButton *quality, *buffer, *resolution;
-@property NSButton *triggerButton, *guardSwitch, *sourceButton;
+@property NSButton *triggerButton, *guardSwitch, *sourceButton, *lateLatchSwitch;
 @property NSTimer *sourceTimer, *metricsTimer;
 @property MCWindowCapture *windowCapture;
 @property (atomic) BOOL captureMode;
@@ -181,6 +181,8 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
     c.audioEnabled = NO;
     c.duplicateDetection = self.captureMode;
     c.suppressAbruptInterpolation = enhanced && self.guardSwitch.state == NSControlStateValueOn;
+    c.lateLatchDelaySeconds =
+        enhanced && self.lateLatchSwitch.state == NSControlStateValueOn ? .008 : 0;
     c.presentation = MCVideoPresentationEnhanced;
     c.maxConcurrentGPUBatches = 2;
     c.gpuTextureBudgetMiB = enhanced && size == 2 ? 512 : 256;
@@ -451,6 +453,7 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
     self.buffer.frame = NSMakeRect(227, 89, 205, 30);
     self.triggerButton.frame = NSMakeRect(447, 85, 180, 38);
     self.guardSwitch.frame = NSMakeRect(635, 87, 222, 35);
+    self.lateLatchSwitch.frame = NSMakeRect(635, 53, 250, 30);
     self.resolution.frame = NSMakeRect(856, 87, 165, 35);
     self.sourceButton.frame = NSMakeRect(1025, 85, 180, 38);
     self.footnote.frame = NSMakeRect(24, 23, w - 48, 30);
@@ -632,6 +635,15 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
             : NSControlStateValueOn;
     self.guardSwitch.enabled = !self.selfTest;
     [root addSubview:self.guardSwitch];
+    self.lateLatchSwitch = [NSButton checkboxWithTitle:@"Late-latch frames (8 ms, experimental)"
+                                                target:self
+                                                action:@selector(reconfigure:)];
+    self.lateLatchSwitch.state =
+        [NSProcessInfo.processInfo.arguments containsObject:@"--late-latch-ms=8"]
+            ? NSControlStateValueOn
+            : NSControlStateValueOff;
+    self.lateLatchSwitch.enabled = !self.selfTest;
+    [root addSubview:self.lateLatchSwitch];
     self.triggerButton.enabled = !self.selfTest;
     self.buffer.enabled = !self.selfTest;
     self.quality.enabled = !self.selfTest;
@@ -703,6 +715,10 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
         @"kind" : @"summary",
         @"launchArguments" : NSProcessInfo.processInfo.arguments,
         @"rightMultiplier" : @(self.quality.indexOfSelectedItem == 1 ? 4 : 2),
+        @"rightLateLatchRequestedMs" : right[@"schedulerLateLatchRequestedMs"] ?: @0,
+        @"rightLateLatchActualP50Ms" : right[@"schedulerLateLatchActualP50Ms"] ?: @0,
+        @"rightSubmissionDeadlineSlackP05Ms" : right[@"schedulerSubmissionDeadlineSlackP05Ms"]
+            ?: @0,
         @"rightOutputWidth" : @(self.resolution.indexOfSelectedItem == 2   ? 2560
                                 : self.resolution.indexOfSelectedItem == 1 ? 1920
                                                                            : 1280),
