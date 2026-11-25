@@ -209,6 +209,12 @@ int main(void) {
             TestOutputFrameCount(2, 2, true, MCInterpolationBackendLinearBlend);
             TestOutputFrameCount(2, 2, true, MCInterpolationBackendVideoToolbox, true);
             TestOutputFrameCount(2, 2, false, MCInterpolationBackendVideoToolbox, true);
+            MCVideoConfiguration *invalidGamingAudio = [MCVideoConfiguration new];
+            invalidGamingAudio.gameplayImmediate = YES;
+            invalidGamingAudio.audioEnabled = YES;
+            assert([[MCVideoEngine alloc] initWithConfiguration:invalidGamingAudio
+                                                          layer:[CAMetalLayer layer]
+                                                          error:nil] == nil);
             TestAbruptGuard(false);
             TestAbruptGuard(true);
             TestAbruptGuard(true, 4);

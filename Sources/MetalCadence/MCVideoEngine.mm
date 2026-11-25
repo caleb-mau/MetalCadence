@@ -370,7 +370,8 @@ static MCPipelineBundle *MCProductionPipelines(id<MTLDevice> device,
         c.gpuTextureBudgetMiB < 64 || c.gpuTextureBudgetMiB > 16384 ||
         c.maxCachedTexturesPerPool > 256 ||
         c.preallocatedTexturesPerPool > c.maxCachedTexturesPerPool ||
-        c.maxConcurrentGPUBatches < 1 || c.maxConcurrentGPUBatches > 4) {
+        c.maxConcurrentGPUBatches < 1 || c.maxConcurrentGPUBatches > 4 ||
+        (c.gameplayImmediate && c.audioEnabled)) {
         if (error)
             *error = MCError(@"Invalid configuration");
         return nil;
@@ -667,6 +668,8 @@ static MCPipelineBundle *MCProductionPipelines(id<MTLDevice> device,
                                 ? [[MCFrameBudgetController alloc] initWithPreferredMultiplier:4]
                                 : nil;
     self.activeMultiplier = c.gameplayImmediate ? 1 : c.multiplier;
+    if (c.gameplayImmediate)
+        self.currentPlayoutDelay = 0;
     self.nominalSourceInterval =
         (c.profile && c.profile.sourceFPS > 0 && isfinite(c.profile.sourceFPS))
             ? 1. / c.profile.sourceFPS

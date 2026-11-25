@@ -52,6 +52,7 @@ API_AVAILABLE(macos(26.0))
 /// Prioritize responsiveness over interpolation. Each source frame is
 /// upscaled independently and presented ASAP without a future-frame wait.
 /// Generated-frame 2x/4x is disabled in this mode, by design.
+/// This is video-only: set audioEnabled=NO and play audio in the source app.
 @property BOOL gameplayImmediate;
 /// Opt-in: skip redundant GPU redraws when the displayed frame is unchanged.
 @property BOOL skipRedundantPresentations;
