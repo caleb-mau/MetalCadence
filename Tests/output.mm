@@ -115,7 +115,7 @@ TestOutputFrameCount(NSInteger multiplier,
               metrics[@"interpolationErrors"],
               metrics[@"gpuErrors"]);
     }
-    assert(scheduled == processed * multiplier);
+    assert(scheduled == processed * (gameplayImmediate ? 1 : multiplier));
     assert([metrics[@"outputFrameAttempts"] integerValue] == scheduled);
     assert([metrics[@"rejectedOutputFrames"] integerValue] == 0);
     assert([metrics[@"incompleteGeneratedBatches"] integerValue] == 0);
@@ -123,7 +123,7 @@ TestOutputFrameCount(NSInteger multiplier,
     assert([metrics[@"scaleFailures"] integerValue] == 0);
     assert([metrics[@"interpolationErrors"] integerValue] == 0);
     assert([metrics[@"gpuErrors"] integerValue] == 0);
-    assert(native == (multiplier == 1 ? processed : 0));
+    assert(native == (multiplier == 1 || gameplayImmediate ? processed : 0));
     assert([metrics[@"nativeResolutionBypass"] boolValue] == nativeResolution);
     if (nativeResolution)
         assert([metrics[@"nativeTextureAllocations"] integerValue] == 0);
