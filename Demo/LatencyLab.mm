@@ -55,6 +55,8 @@ static const int LabHeight = 720;
 @property NSString *lastLeftFrameText, *lastRightFrameText;
 @property MCFrameContentKind lastLeftContentKind, lastRightContentKind;
 @property int64_t lastLeftSourceNumber, lastRightSourceNumber;
+@property NSUInteger displayedOriginalCount, displayedRealCount, displayedGeneratedCount,
+    displayedRepeatedCount;
 @property BOOL flipped, selfTest;
 @property double lastLeftTime, lastRightTime;
 @property NSUInteger previousLeftFrames, previousRightFrames;
@@ -343,15 +345,18 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
     NSString *explanation;
     NSColor *color;
     if (!enhanced) {
+        self.displayedOriginalCount++;
         headline = [NSString stringWithFormat:@"ORIGINAL FRAME  #%04lld", (long long)sourceStart];
         explanation = @"Real frame received from the video source";
         color = NSColor.whiteColor;
     } else if (kind == MCFrameContentHeld) {
+        self.displayedRepeatedCount++;
         headline = [NSString stringWithFormat:@"OUTPUT #%04lld  ·  REPEATED", (long long)outputID];
         explanation = [NSString stringWithFormat:@"Held original #%04lld during a sudden change",
                                                  (long long)sourceStart];
         color = [NSColor colorWithRed:1 green:.76 blue:.30 alpha:1];
     } else if (kind == MCFrameContentGenerated) {
+        self.displayedGeneratedCount++;
         headline = [NSString stringWithFormat:@"OUTPUT #%04lld  ·  GENERATED", (long long)outputID];
         explanation =
             [NSString stringWithFormat:@"Between originals #%04lld and #%04lld  ·  %lu of %lu",
@@ -361,6 +366,7 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
                                        (unsigned long)steps];
         color = [NSColor colorWithRed:.40 green:.89 blue:1 alpha:1];
     } else {
+        self.displayedRealCount++;
         headline = [NSString stringWithFormat:@"OUTPUT #%04lld  ·  REAL", (long long)outputID];
         explanation = [NSString
             stringWithFormat:@"Original frame #%04lld  ·  not generated", (long long)sourceStart];
@@ -1038,6 +1044,10 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
         @"lastOriginalSourceNumber" : @(self.lastLeftSourceNumber),
         @"lastEnhancedSourceNumber" : @(self.lastRightSourceNumber),
         @"lastEnhancedContentKind" : @(self.lastRightContentKind),
+        @"displayedOriginalFrameLabels" : @(self.displayedOriginalCount),
+        @"displayedRealFrameLabels" : @(self.displayedRealCount),
+        @"displayedGeneratedFrameLabels" : @(self.displayedGeneratedCount),
+        @"displayedRepeatedFrameLabels" : @(self.displayedRepeatedCount),
         @"rightLateLatchRequestedMs" : right[@"schedulerLateLatchRequestedMs"] ?: @0,
         @"rightLateLatchActualP50Ms" : right[@"schedulerLateLatchActualP50Ms"] ?: @0,
         @"rightSubmissionDeadlineSlackP05Ms" : right[@"schedulerSubmissionDeadlineSlackP05Ms"]
