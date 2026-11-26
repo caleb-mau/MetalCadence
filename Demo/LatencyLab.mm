@@ -58,6 +58,18 @@ static const int LabHeight = 720;
 - (void)resizeContent;
 @end
 
+// AppKit must own each CAMetalLayer's transform and frame in the window's
+// layer tree. Setting layer.frame manually to surface.bounds displaced BOTH
+// independent previews to the bottom-left, and setting surface.frame only
+// patches the initial location without correct AppKit resize ownership.
+@interface MCLabMetalSurfaceView : NSView
+@end
+@implementation MCLabMetalSurfaceView
+- (CALayer *)makeBackingLayer {
+    return [CAMetalLayer layer];
+}
+@end
+
 @implementation MCLabWindow
 - (void)keyDown:(NSEvent *)event {
     if (self.lab.selfTest)
@@ -80,11 +92,9 @@ static NSTextField *LabLabel(NSString *text, CGFloat size, NSFontWeight weight, 
 }
 
 static void LabAttach(NSView *surface, CAMetalLayer *layer, CGFloat scale) {
-    // A backing layer's frame is in its parent layer coordinate space.
-    // Using surface.bounds here sets origin to (0,0) for BOTH left and
-    // right views, overlapping the GPU output outside the view rectangles.
-    // Give the layer its corresponding view frame, not its local bounds.
-    layer.frame = surface.frame;
+    // AppKit positions the backing layer through its NSView's frame and
+    // layout lifecycle. Only manage Metal drawable pixels and Retina scale.
+    // Never assign CAMetalLayer.frame here.
     layer.contentsScale = scale;
     layer.drawableSize = CGSizeMake(MAX(1, surface.bounds.size.width * scale),
                                     MAX(1, surface.bounds.size.height * scale));
@@ -673,10 +683,15 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
          ])
         [root addSubview:view];
 
-    self.leftSurface = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 600, 350)];
-    self.rightSurface = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 600, 350)];
-    self.leftLayer = [CAMetalLayer layer];
-    self.rightLayer = [CAMetalLayer layer];
+    self.leftSurface = [[MCLabMetalSurfaceView alloc] initWithFrame:NSMakeRect(0, 0, 600, 350)];
+    self.rightSurface = [[MCLabMetalSurfaceView alloc] initWithFrame:NSMakeRect(0, 0, 600, 350)];
+    self.leftSurface.wantsLayer = YES;
+    self.rightSurface.wantsLayer = YES;
+    self.leftLayer = (CAMetalLayer *)self.leftSurface.layer;
+    self.rightLayer = (CAMetalLayer *)self.rightSurface.layer;
+    NSAssert([self.leftLayer isKindOfClass:CAMetalLayer.class] &&
+                 [self.rightLayer isKindOfClass:CAMetalLayer.class],
+             @"Native previews require independent AppKit-managed CAMetalLayer backings");
     id<MTLDevice> device = MTLCreateSystemDefaultDevice();
     for (CAMetalLayer *layer in @[ self.leftLayer, self.rightLayer ]) {
         layer.device = device;
@@ -686,10 +701,6 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
         layer.masksToBounds = YES;
         layer.maximumDrawableCount = 3;
     }
-    self.leftSurface.layer = self.leftLayer;
-    self.leftSurface.wantsLayer = YES;
-    self.rightSurface.layer = self.rightLayer;
-    self.rightSurface.wantsLayer = YES;
     [root addSubview:self.leftSurface];
     [root addSubview:self.rightSurface];
 
