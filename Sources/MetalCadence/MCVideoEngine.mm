@@ -101,6 +101,7 @@ static NSError *MCError(NSString *message) {
 @interface MCInputFrame : NSObject
 @property CVPixelBufferRef buffer, original;
 @property double pts, arrival;
+@property int64_t sourceNumber;
 @end
 @implementation MCInputFrame
 - (void)dealloc {
@@ -326,7 +327,7 @@ static MCPipelineBundle *MCProductionPipelines(id<MTLDevice> device,
 @property BOOL draining, hasHash;
 @property uint64_t lastHash;
 @property double lastPTS, lastOutputPTS, nextAudioPTS, lastAudioSource;
-@property int64_t outputID;
+@property int64_t outputID, automaticSourceID;
 @property (atomic) long abruptHoldBatches;
 @property (atomic) long outputFrameAttempts;
 @property (atomic) long rejectedOutputFrames;
@@ -538,6 +539,12 @@ static MCPipelineBundle *MCProductionPipelines(id<MTLDevice> device,
             if (callback)
                 callback(sourceTime, presentedTime, frameID);
         };
+    _scheduler.onFrameDetailsPresented = ^(MCFrame *frame, CFTimeInterval presentedTime) {
+        MCVideoEngine *engine = weak;
+        MCFrameDetailsPresentedBlock callback = engine.onFrameDetailsPresented;
+        if (callback)
+            callback(frame, presentedTime);
+    };
     _scheduler.useDedicatedRenderThread = c.dedicatedPresentationThread;
     _scheduler.lateLatchDelaySeconds = c.lateLatchDelaySeconds;
     _scheduler.immediatePresentation = c.gameplayImmediate;
@@ -885,6 +892,11 @@ static void MCInitializeColorRangeLUT(void) {
     return output;
 }
 - (BOOL)submitVideo:(CVPixelBufferRef)b hostTime:(double)pts {
+    return [self submitVideo:b hostTime:pts sourceFrameNumber:0];
+}
+- (BOOL)submitVideo:(CVPixelBufferRef)b
+             hostTime:(double)pts
+    sourceFrameNumber:(int64_t)sourceFrameNumber {
     if (!self.running)
         return NO;
     MCVideoConfiguration *c = _configuration;
@@ -920,6 +932,7 @@ static void MCInitializeColorRangeLUT(void) {
         return YES;
     }
     MCInputFrame *f = [MCInputFrame new];
+    f.sourceNumber = sourceFrameNumber > 0 ? sourceFrameNumber : ++_automaticSourceID;
     f.original = CVPixelBufferRetain(b);
     if (CVPixelBufferGetPixelFormatType(b) == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange) {
         double started = CACurrentMediaTime();
@@ -1300,11 +1313,19 @@ static void MCInitializeColorRangeLUT(void) {
                             double target =
                                 MAX(pts + i * delta / MAX(1, mult), self.lastOutputPTS + .0001);
                             self.outputFrameAttempts++;
-                            BOOL accepted = [self.scheduler
-                                submit:[[MCFrame alloc] initWithID:++self->_outputID
-                                                               pts:target
-                                                        sourceTime:a.pts + i * delta / MAX(1, mult)
-                                                           payload:@[ batch, @(i) ]]];
+                            MCFrame *output =
+                                [[MCFrame alloc] initWithID:++self->_outputID
+                                                        pts:target
+                                                 sourceTime:a.pts + i * delta / MAX(1, mult)
+                                                    payload:@[ batch, @(i) ]];
+                            output.sourceStartFrame = a.sourceNumber;
+                            output.sourceEndFrame = b.sourceNumber;
+                            output.interpolationStep = i;
+                            output.interpolationSteps = mult - 1;
+                            output.contentKind = i == 0       ? MCFrameContentReal
+                                                 : holdAbrupt ? MCFrameContentHeld
+                                                              : MCFrameContentGenerated;
+                            BOOL accepted = [self.scheduler submit:output];
                             if (accepted) {
                                 self.submitted++;
                             } else {
