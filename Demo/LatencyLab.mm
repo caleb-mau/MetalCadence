@@ -80,7 +80,11 @@ static NSTextField *LabLabel(NSString *text, CGFloat size, NSFontWeight weight, 
 }
 
 static void LabAttach(NSView *surface, CAMetalLayer *layer, CGFloat scale) {
-    layer.frame = surface.bounds;
+    // A backing layer's frame is in its parent layer coordinate space.
+    // Using surface.bounds here sets origin to (0,0) for BOTH left and
+    // right views, overlapping the GPU output outside the view rectangles.
+    // Give the layer its corresponding view frame, not its local bounds.
+    layer.frame = surface.frame;
     layer.contentsScale = scale;
     layer.drawableSize = CGSizeMake(MAX(1, surface.bounds.size.width * scale),
                                     MAX(1, surface.bounds.size.height * scale));
