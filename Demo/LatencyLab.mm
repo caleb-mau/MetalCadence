@@ -573,6 +573,28 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
     }
     self.lastReportAt = now;
 
+    // The GPU output texture is 2560x1440 but the side-by-side drawable is
+    // much smaller. Show both values so scaled previews are never mistaken
+    // for native-resolution 1:1 image inspection.
+    MCVideoConfiguration *enhancedConfig = self.rightEngine.configuration;
+    CGSize preview = self.rightLayer.drawableSize;
+    if (enhancedConfig && enhancedConfig.outputWidth > 0 && enhancedConfig.outputHeight > 0 &&
+        preview.width > 0 && preview.height > 0) {
+        CGFloat aspect = (CGFloat)enhancedConfig.outputWidth / enhancedConfig.outputHeight;
+        CGFloat pictureW = MIN(preview.width, preview.height * aspect);
+        CGFloat pictureH = pictureW / aspect;
+        BOOL smaller = pictureW + .5 < enhancedConfig.outputWidth ||
+                       pictureH + .5 < enhancedConfig.outputHeight;
+        self.subtitle.stringValue = [NSString
+            stringWithFormat:@"MetalFX output: %ld × %ld · visible preview: %.0f × %.0f pixels%@ · "
+                             @"Original: 1280 × 720",
+                             (long)enhancedConfig.outputWidth,
+                             (long)enhancedConfig.outputHeight,
+                             pictureW,
+                             pictureH,
+                             smaller ? @" (scaled smaller)" : @""];
+    }
+
     if (self.clipMode) {
         self.instructions.stringValue =
             [NSString stringWithFormat:
@@ -1048,6 +1070,10 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
         @"displayedRealFrameLabels" : @(self.displayedRealCount),
         @"displayedGeneratedFrameLabels" : @(self.displayedGeneratedCount),
         @"displayedRepeatedFrameLabels" : @(self.displayedRepeatedCount),
+        @"outputTextureWidth" : @(self.rightEngine.configuration.outputWidth),
+        @"outputTextureHeight" : @(self.rightEngine.configuration.outputHeight),
+        @"rightPreviewDrawableWidth" : @(self.rightLayer.drawableSize.width),
+        @"rightPreviewDrawableHeight" : @(self.rightLayer.drawableSize.height),
         @"rightLateLatchRequestedMs" : right[@"schedulerLateLatchRequestedMs"] ?: @0,
         @"rightLateLatchActualP50Ms" : right[@"schedulerLateLatchActualP50Ms"] ?: @0,
         @"rightSubmissionDeadlineSlackP05Ms" : right[@"schedulerSubmissionDeadlineSlackP05Ms"]
