@@ -47,6 +47,16 @@ static const int LabHeight = 720;
 @property NSMutableArray<MCLabInputEvent *> *events;
 @property NSString *logPath;
 @property NSUInteger inputIndex, sourceFrames, tickCount;
+@property int64_t sharedSourceNumber, lastLeftOutputID, lastRightOutputID;
+@property NSView *leftFrameOverlay, *rightFrameOverlay;
+@property NSTextField *leftFrameHeadline, *leftFrameExplanation;
+@property NSTextField *rightFrameHeadline, *rightFrameExplanation;
+@property NSButton *frameDetailsSwitch;
+@property NSString *lastLeftFrameText, *lastRightFrameText;
+@property MCFrameContentKind lastLeftContentKind, lastRightContentKind;
+@property int64_t lastLeftSourceNumber, lastRightSourceNumber;
+@property NSUInteger displayedOriginalCount, displayedRealCount, displayedGeneratedCount,
+    displayedRepeatedCount;
 @property BOOL flipped, selfTest;
 @property double lastLeftTime, lastRightTime;
 @property NSUInteger previousLeftFrames, previousRightFrames;
@@ -266,6 +276,27 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
         (void)frameID;
         [weakSelf didPresentSource:source time:presented isEnhanced:enhanced];
     };
+    __weak MCVideoEngine *weakEngine = engine;
+    engine.onFrameDetailsPresented = ^(MCFrame *frame, CFTimeInterval presented) {
+        (void)presented;
+        int64_t output = frame.identifier;
+        int64_t sourceStart = frame.sourceStartFrame;
+        int64_t sourceEnd = frame.sourceEndFrame;
+        MCFrameContentKind kind = frame.contentKind;
+        NSUInteger step = frame.interpolationStep, steps = frame.interpolationSteps;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            MCLatencyLab *lab = weakSelf;
+            if (!lab || (enhanced ? lab.rightEngine : lab.leftEngine) != weakEngine)
+                return;
+            [lab updateFrameOverlayWithID:output
+                              sourceStart:sourceStart
+                                sourceEnd:sourceEnd
+                                     kind:kind
+                                     step:step
+                                    steps:steps
+                                 enhanced:enhanced];
+        });
+    };
     if (enhanced)
         self.rightEngine = engine;
     else
@@ -275,12 +306,93 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
 - (void)reconfigure:(id)sender {
     [self.rightEngine stop];
     self.rightEngine.onFreshFramePresented = nil;
+    self.rightEngine.onFrameDetailsPresented = nil;
     self.rightEngine = nil;
+    self.lastRightOutputID = 0;
     self.lastRightTime = 0;
     self.previousRightFrames = 0;
     for (MCLabInputEvent *event in self.events)
         event.rightResponse = 0;
     [self startEngine:YES];
+}
+- (void)submitSharedVideo:(CVPixelBufferRef)frame hostTime:(double)hostTime {
+    int64_t sourceID;
+    @synchronized(self) {
+        sourceID = ++self.sharedSourceNumber;
+    }
+    BOOL left = [self.leftEngine submitVideo:frame hostTime:hostTime sourceFrameNumber:sourceID];
+    BOOL right = [self.rightEngine submitVideo:frame hostTime:hostTime sourceFrameNumber:sourceID];
+    if (left || right)
+        self.sourceFrames++;
+}
+- (void)updateFrameOverlayWithID:(int64_t)outputID
+                     sourceStart:(int64_t)sourceStart
+                       sourceEnd:(int64_t)sourceEnd
+                            kind:(MCFrameContentKind)kind
+                            step:(NSUInteger)step
+                           steps:(NSUInteger)steps
+                        enhanced:(BOOL)enhanced {
+    // A callback may arrive after a newer frame, a mode switch or a resize.
+    int64_t last = enhanced ? self.lastRightOutputID : self.lastLeftOutputID;
+    if (outputID <= last)
+        return;
+    if (enhanced)
+        self.lastRightOutputID = outputID;
+    else
+        self.lastLeftOutputID = outputID;
+
+    NSString *headline;
+    NSString *explanation;
+    NSColor *color;
+    if (!enhanced) {
+        self.displayedOriginalCount++;
+        headline = [NSString stringWithFormat:@"ORIGINAL FRAME  #%04lld", (long long)sourceStart];
+        explanation = @"Real frame received from the video source";
+        color = NSColor.whiteColor;
+    } else if (kind == MCFrameContentHeld) {
+        self.displayedRepeatedCount++;
+        headline = [NSString stringWithFormat:@"OUTPUT #%04lld  ·  REPEATED", (long long)outputID];
+        explanation = [NSString stringWithFormat:@"Held original #%04lld during a sudden change",
+                                                 (long long)sourceStart];
+        color = [NSColor colorWithRed:1 green:.76 blue:.30 alpha:1];
+    } else if (kind == MCFrameContentGenerated) {
+        self.displayedGeneratedCount++;
+        headline = [NSString stringWithFormat:@"OUTPUT #%04lld  ·  GENERATED", (long long)outputID];
+        explanation =
+            [NSString stringWithFormat:@"Between originals #%04lld and #%04lld  ·  %lu of %lu",
+                                       (long long)sourceStart,
+                                       (long long)sourceEnd,
+                                       (unsigned long)step,
+                                       (unsigned long)steps];
+        color = [NSColor colorWithRed:.40 green:.89 blue:1 alpha:1];
+    } else {
+        self.displayedRealCount++;
+        headline = [NSString stringWithFormat:@"OUTPUT #%04lld  ·  REAL", (long long)outputID];
+        explanation = [NSString
+            stringWithFormat:@"Original frame #%04lld  ·  not generated", (long long)sourceStart];
+        color = NSColor.whiteColor;
+    }
+
+    NSTextField *title = enhanced ? self.rightFrameHeadline : self.leftFrameHeadline;
+    NSTextField *details = enhanced ? self.rightFrameExplanation : self.leftFrameExplanation;
+    title.stringValue = headline;
+    title.textColor = color;
+    details.stringValue = explanation;
+    if (enhanced) {
+        self.lastRightFrameText = [headline stringByAppendingFormat:@" | %@", explanation];
+        self.lastRightContentKind = kind;
+        self.lastRightSourceNumber = sourceStart;
+    } else {
+        self.lastLeftFrameText = [headline stringByAppendingFormat:@" | %@", explanation];
+        self.lastLeftContentKind = kind;
+        self.lastLeftSourceNumber = sourceStart;
+    }
+}
+- (void)toggleFrameDetails:(id)sender {
+    (void)sender;
+    BOOL visible = self.frameDetailsSwitch.state == NSControlStateValueOn;
+    self.leftFrameOverlay.hidden = !visible;
+    self.rightFrameOverlay.hidden = !visible;
 }
 - (void)sourceTick:(NSTimer *)timer {
     (void)timer;
@@ -297,9 +409,7 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
             event.sourcePTS = samplePTS;
     }
     LabFill(frame, self.tickCount++, self.flipped);
-    [self.leftEngine submitVideo:frame hostTime:samplePTS];
-    [self.rightEngine submitVideo:frame hostTime:samplePTS];
-    self.sourceFrames++;
+    [self submitSharedVideo:frame hostTime:samplePTS];
     CVPixelBufferRelease(frame);
 }
 - (void)triggerAction {
@@ -321,6 +431,8 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
     self.previousLeftFrames = 0;
     self.previousRightFrames = 0;
     self.lastReportAt = 0;
+    self.lastLeftOutputID = 0;
+    self.lastRightOutputID = 0;
     [self startEngine:NO];
     [self startEngine:YES];
 }
@@ -378,10 +490,7 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
             MCLatencyLab *lab = weakSelf;
             if (!lab || !lab.clipMode)
                 return;
-            BOOL source = [lab.leftEngine submitVideo:buffer hostTime:arrival];
-            BOOL enhanced = [lab.rightEngine submitVideo:buffer hostTime:arrival];
-            if (source || enhanced)
-                lab.sourceFrames++;
+            [lab submitSharedVideo:buffer hostTime:arrival];
         }
         onStatus:^(NSString *message, NSError *error) {
             MCLatencyLab *lab = weakSelf;
@@ -431,10 +540,7 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
             MCLatencyLab *lab = weakSelf;
             if (!lab || !lab.captureMode)
                 return;
-            BOOL raw = [lab.leftEngine submitVideo:frame hostTime:arrival];
-            BOOL generated = [lab.rightEngine submitVideo:frame hostTime:arrival];
-            if (raw || generated)
-                lab.sourceFrames++;
+            [lab submitSharedVideo:frame hostTime:arrival];
         }
         onStatus:^(NSString *message, NSError *error) {
             MCLatencyLab *lab = weakSelf;
@@ -466,6 +572,28 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
         self.previousRightFrames = rightTotal;
     }
     self.lastReportAt = now;
+
+    // The GPU output texture is 2560x1440 but the side-by-side drawable is
+    // much smaller. Show both values so scaled previews are never mistaken
+    // for native-resolution 1:1 image inspection.
+    MCVideoConfiguration *enhancedConfig = self.rightEngine.configuration;
+    CGSize preview = self.rightLayer.drawableSize;
+    if (enhancedConfig && enhancedConfig.outputWidth > 0 && enhancedConfig.outputHeight > 0 &&
+        preview.width > 0 && preview.height > 0) {
+        CGFloat aspect = (CGFloat)enhancedConfig.outputWidth / enhancedConfig.outputHeight;
+        CGFloat pictureW = MIN(preview.width, preview.height * aspect);
+        CGFloat pictureH = pictureW / aspect;
+        BOOL smaller = pictureW + .5 < enhancedConfig.outputWidth ||
+                       pictureH + .5 < enhancedConfig.outputHeight;
+        self.subtitle.stringValue = [NSString
+            stringWithFormat:@"MetalFX output: %ld × %ld · visible preview: %.0f × %.0f pixels%@ · "
+                             @"Original: 1280 × 720",
+                             (long)enhancedConfig.outputWidth,
+                             (long)enhancedConfig.outputHeight,
+                             pictureW,
+                             pictureH,
+                             smaller ? @" (scaled smaller)" : @""];
+    }
 
     if (self.clipMode) {
         self.instructions.stringValue =
@@ -558,6 +686,18 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
     CGFloat surfaceHeight = MAX(270, h - surfaceY - 132);
     self.leftSurface.frame = NSMakeRect(20, surfaceY, half, surfaceHeight);
     self.rightSurface.frame = NSMakeRect(32 + half, surfaceY, half, surfaceHeight);
+    NSArray<NSView *> *panels = @[ self.leftFrameOverlay, self.rightFrameOverlay ];
+    NSArray<NSView *> *surfaces = @[ self.leftSurface, self.rightSurface ];
+    for (NSUInteger i = 0; i < panels.count; ++i) {
+        NSRect rect = surfaces[i].frame;
+        NSView *overlay = panels[i];
+        overlay.frame = NSMakeRect(
+            NSMinX(rect) + 12, NSMaxY(rect) - 72, MAX(200, MIN(NSWidth(rect) - 24, 490)), 60);
+        NSTextField *title = i == 0 ? self.leftFrameHeadline : self.rightFrameHeadline;
+        NSTextField *detail = i == 0 ? self.leftFrameExplanation : self.rightFrameExplanation;
+        title.frame = NSMakeRect(12, 31, NSWidth(overlay.frame) - 24, 20);
+        detail.frame = NSMakeRect(12, 9, NSWidth(overlay.frame) - 24, 17);
+    }
     CGFloat scale = self.window.screen.backingScaleFactor ?: 1;
     LabAttach(self.leftSurface, self.leftLayer, scale);
     LabAttach(self.rightSurface, self.rightLayer, scale);
@@ -574,6 +714,7 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
     self.resolution.frame = NSMakeRect(856, 87, 165, 35);
     self.sourceButton.frame = NSMakeRect(1025, 85, 180, 38);
     self.clipButton.frame = NSMakeRect(1025, 43, 175, 36);
+    self.frameDetailsSwitch.frame = NSMakeRect(1025, 11, 180, 28);
     self.footnote.frame = NSMakeRect(24, 23, 590, 30);
 }
 - (void)windowDidResize:(NSNotification *)notification {
@@ -703,6 +844,35 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
     }
     [root addSubview:self.leftSurface];
     [root addSubview:self.rightSurface];
+    for (NSInteger side = 0; side < 2; side++) {
+        NSView *panel = [[NSView alloc] initWithFrame:NSZeroRect];
+        panel.wantsLayer = YES;
+        panel.layer.backgroundColor = [NSColor colorWithCalibratedWhite:.035 alpha:.84].CGColor;
+        panel.layer.cornerRadius = 8;
+        panel.layer.masksToBounds = YES;
+        NSTextField *headline =
+            LabLabel(side == 0 ? @"ORIGINAL FRAME  ·  WAITING" : @"GENERATED OUTPUT  ·  WAITING",
+                     13,
+                     NSFontWeightSemibold,
+                     NSColor.whiteColor);
+        NSTextField *explanation = LabLabel(
+            side == 0 ? @"From the 30 FPS video" : @"Will identify original or generated frames",
+            11,
+            NSFontWeightMedium,
+            [NSColor colorWithCalibratedWhite:.9 alpha:1]);
+        [panel addSubview:headline];
+        [panel addSubview:explanation];
+        [root addSubview:panel positioned:NSWindowAbove relativeTo:nil];
+        if (side == 0) {
+            self.leftFrameOverlay = panel;
+            self.leftFrameHeadline = headline;
+            self.leftFrameExplanation = explanation;
+        } else {
+            self.rightFrameOverlay = panel;
+            self.rightFrameHeadline = headline;
+            self.rightFrameExplanation = explanation;
+        }
+    }
 
     self.quality = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
     [self.quality addItemsWithTitles:@[ @"2× · 60 generated FPS", @"4× · 120 generated FPS" ]];
@@ -802,6 +972,17 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
     self.clipButton.bezelStyle = NSBezelStyleRounded;
     self.clipButton.enabled = !self.selfTest && !self.clipTest;
     [root addSubview:self.clipButton];
+    self.frameDetailsSwitch = [NSButton checkboxWithTitle:@"Show frame details"
+                                                   target:self
+                                                   action:@selector(toggleFrameDetails:)];
+    self.frameDetailsSwitch.state =
+        [NSProcessInfo.processInfo.arguments containsObject:@"--hide-frame-details"]
+            ? NSControlStateValueOff
+            : NSControlStateValueOn;
+    self.frameDetailsSwitch.toolTip =
+        @"Source numbers match across panels. Output numbers may skip when frames are dropped.";
+    [root addSubview:self.frameDetailsSwitch];
+    [self toggleFrameDetails:nil];
     [self.window makeKeyAndOrderFront:nil];
     [self resizeContent];
 
@@ -880,6 +1061,19 @@ static void LabFill(CVPixelBufferRef frame, NSUInteger tick, BOOL flipped) {
         @"launchArguments" : NSProcessInfo.processInfo.arguments,
         @"rightMultiplier" : @(self.quality.indexOfSelectedItem == 1 ? 4 : 2),
         @"rightGameplayImmediate" : right[@"gameplayImmediate"] ?: @NO,
+        @"lastOriginalFrameLabel" : self.lastLeftFrameText ?: @"",
+        @"lastEnhancedFrameLabel" : self.lastRightFrameText ?: @"",
+        @"lastOriginalSourceNumber" : @(self.lastLeftSourceNumber),
+        @"lastEnhancedSourceNumber" : @(self.lastRightSourceNumber),
+        @"lastEnhancedContentKind" : @(self.lastRightContentKind),
+        @"displayedOriginalFrameLabels" : @(self.displayedOriginalCount),
+        @"displayedRealFrameLabels" : @(self.displayedRealCount),
+        @"displayedGeneratedFrameLabels" : @(self.displayedGeneratedCount),
+        @"displayedRepeatedFrameLabels" : @(self.displayedRepeatedCount),
+        @"outputTextureWidth" : @(self.rightEngine.configuration.outputWidth),
+        @"outputTextureHeight" : @(self.rightEngine.configuration.outputHeight),
+        @"rightPreviewDrawableWidth" : @(self.rightLayer.drawableSize.width),
+        @"rightPreviewDrawableHeight" : @(self.rightLayer.drawableSize.height),
         @"rightLateLatchRequestedMs" : right[@"schedulerLateLatchRequestedMs"] ?: @0,
         @"rightLateLatchActualP50Ms" : right[@"schedulerLateLatchActualP50Ms"] ?: @0,
         @"rightSubmissionDeadlineSlackP05Ms" : right[@"schedulerSubmissionDeadlineSlackP05Ms"]

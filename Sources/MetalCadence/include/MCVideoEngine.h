@@ -72,6 +72,8 @@ API_AVAILABLE(macos(26.0))
 /// Optional low-cost test instrumentation. Called after a fresh drawable is presented.
 /// Software drawable time, not measured physical photons.
 @property (atomic, copy, nullable) MCFramePresentedBlock onFreshFramePresented;
+/// Actual output metadata for human-readable debugging overlays.
+@property (atomic, copy, nullable) MCFrameDetailsPresentedBlock onFrameDetailsPresented;
 @property (nonatomic, readonly, copy) MCVideoConfiguration *configuration;
 @property (atomic) MCVideoPresentation presentation;
 @property (atomic) BOOL muted;
@@ -84,6 +86,11 @@ API_AVAILABLE(macos(26.0))
 - (void)stop;
 - (void)updateRefreshRate:(float)refreshRate;
 - (BOOL)submitVideo:(CVPixelBufferRef _Nullable)buffer hostTime:(double)hostTime;
+/// Supply a shared capture/source ID to correlate two independent engines.
+/// Zero requests an automatically assigned per-engine source index.
+- (BOOL)submitVideo:(CVPixelBufferRef _Nullable)buffer
+             hostTime:(double)hostTime
+    sourceFrameNumber:(int64_t)sourceFrameNumber;
 /// 48 kHz, interleaved stereo float PCM; copied before returning.
 - (BOOL)submitAudio:(const float *)samples frameCount:(NSUInteger)count hostTime:(double)hostTime;
 - (NSDictionary<NSString *, NSNumber *> *)metrics;

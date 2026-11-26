@@ -18,12 +18,23 @@ FOUNDATION_EXPORT NSInteger MCSelectDueFrameWithMode(const double *pts,
                                                      double target,
                                                      double lateLimit,
                                                      MCFrameSelectionMode mode);
+/// What an individual displayed output image actually contains.
+typedef NS_ENUM(NSInteger, MCFrameContentKind) {
+    MCFrameContentReal = 0,      // An unchanged source time instant (possibly spatially upscaled).
+    MCFrameContentGenerated = 1, // Optical-flow or blend image between two real inputs.
+    MCFrameContentHeld = 2       // Previous real image repeated for an abrupt transition.
+};
 @interface MCFrame : NSObject
 @property (nonatomic, readonly) int64_t identifier;
 @property (nonatomic, readonly) CFTimeInterval pts;
 @property (nonatomic, readonly) CFTimeInterval ready;
 @property (nonatomic, readonly) CFTimeInterval sourceTime;
 @property (nonatomic, readonly, strong) id payload;
+/// Output IDs may skip when frames are rejected or superseded.
+@property (nonatomic) int64_t sourceStartFrame;
+@property (nonatomic) int64_t sourceEndFrame;
+@property (nonatomic) MCFrameContentKind contentKind;
+@property (nonatomic) NSUInteger interpolationStep, interpolationSteps;
 - (instancetype)initWithID:(int64_t)identifier pts:(CFTimeInterval)pts payload:(id)payload;
 - (instancetype)initWithID:(int64_t)identifier
                        pts:(CFTimeInterval)pts
@@ -35,6 +46,10 @@ FOUNDATION_EXPORT NSInteger MCSelectDueFrameWithMode(const double *pts,
 typedef void (^MCFramePresentedBlock)(CFTimeInterval sourceTime,
                                       CFTimeInterval presentedTime,
                                       int64_t frameID);
+/// Called only for a newly presented output frame. Carries the exact
+/// associated original source IDs and interpolation kind. Never touch AppKit
+/// from this Metal callback thread.
+typedef void (^MCFrameDetailsPresentedBlock)(MCFrame *frame, CFTimeInterval presentedTime);
 typedef void (^MCEncodeBlock)(id<MTLCommandBuffer> commandBuffer,
                               id<CAMetalDrawable> drawable,
                               MCFrame *frame);
@@ -49,6 +64,7 @@ typedef struct {
 /// must be nonblocking.
 @interface MCDisplayScheduler : NSObject <CAMetalDisplayLinkDelegate>
 @property (atomic, copy, nullable) MCFramePresentedBlock onFreshFramePresented;
+@property (atomic, copy, nullable) MCFrameDetailsPresentedBlock onFrameDetailsPresented;
 @property (nonatomic, readonly) NSUInteger capacity;
 @property (nonatomic, readonly) NSUInteger maxInFlight;
 @property (nonatomic) CFTimeInterval maxFrameLateness;

@@ -350,3 +350,24 @@ See Audit/gta-v-live-metalfx-framegen.md for the input source,
 license, flags and measured timing. In the latency lab choose 1440p MetalFX,
 2x framegen, and Play 720p video. Keep Game response first OFF:
 that low-latency setting disables interpolation by design.
+
+## Human-readable frame details
+
+The native MetalCadence Latency Lab has a Show frame details checkbox
+(enabled by default). Each video panel shows the image actually presented:
+
+- Original frame #0418 means the 418th received real source frame.
+- Output #0828 / REAL / Original #0418 means the right side displays a real
+  image, possibly spatially upscaled with MetalFX.
+- Output #0829 / GENERATED / Between originals #0418 and #0419 / 1 of 1
+  means a VideoToolbox synthesized midpoint.
+- Output #0830 / REPEATED / Held original #0418 during a sudden change
+  means the scene-jump guard deliberately repeated a real frame.
+
+White means real, cyan means generated, amber means repeated. Labels update
+from actual Metal drawable presentation callbacks, not queued frames.
+Both engines share original IDs so they can be directly compared.
+Output IDs may skip if a frame is discarded.
+
+The AppKit overlay does not change GPU pixel data or MP4 exports. Switch it
+off in the GUI or launch with --hide-frame-details.

@@ -316,7 +316,8 @@ NSInteger MCSelectDueFrame(const double *pts, NSUInteger count, double target, d
                 return;
             os_unfair_lock_lock(&self->_lock);
             self->_presented++;
-            if (f.identifier > self->_lastDisplayedID) {
+            BOOL fresh = f.identifier > self->_lastDisplayedID;
+            if (fresh) {
                 self->_lastDisplayedID = f.identifier;
                 self->_freshPresented++;
                 self->_sourceLatencyWindow.record(MAX(0, when - f.sourceTime) * 1000);
@@ -336,6 +337,11 @@ NSInteger MCSelectDueFrame(const double *pts, NSUInteger count, double target, d
             MCFramePresentedBlock callback = self.onFreshFramePresented;
             if (callback)
                 callback(f.sourceTime, when, f.identifier);
+            if (fresh) {
+                MCFrameDetailsPresentedBlock details = self.onFrameDetailsPresented;
+                if (details)
+                    details(f, when);
+            }
         }];
         [command addCompletedHandler:^(id<MTLCommandBuffer> completed) {
             (void)f.payload;
@@ -550,6 +556,9 @@ NSInteger MCSelectDueFrame(const double *pts, NSUInteger count, double target, d
                 MCFramePresentedBlock callback = self.onFreshFramePresented;
                 if (callback)
                     callback(f.sourceTime, t, f.identifier);
+                MCFrameDetailsPresentedBlock details = self.onFrameDetailsPresented;
+                if (details)
+                    details(f, t);
             }
         }];
         double committedAt = CACurrentMediaTime();
